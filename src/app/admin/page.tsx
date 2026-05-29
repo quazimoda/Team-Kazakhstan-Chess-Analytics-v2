@@ -3,6 +3,9 @@ import { SyncMatchesButton } from "./_components/sync-matches-button";
 import { formatDateTime } from "@/lib/utils";
 import { getSyncJobs } from "@/server/queries";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export default async function AdminPage() {
   const jobs = await getSyncJobs();
   const latest = jobs.data[0] ?? null;

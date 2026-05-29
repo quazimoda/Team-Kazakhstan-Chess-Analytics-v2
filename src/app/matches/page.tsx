@@ -4,6 +4,9 @@ import { Card, PageHeader } from "@/components/ui";
 import { baseLeagues } from "@/server/db/seedLeagues";
 import { getMatches } from "@/server/queries";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 function filterHref(official: string, league: string) {
   const params = new URLSearchParams();
   if (official !== "all") params.set("official", official);

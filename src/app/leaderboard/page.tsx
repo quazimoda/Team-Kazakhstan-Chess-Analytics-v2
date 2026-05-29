@@ -2,6 +2,9 @@ import { LeaderboardTable } from "@/components/tables";
 import { Card, PageHeader } from "@/components/ui";
 import { getLeaderboard, getLeagues, type LeaderboardSort } from "@/server/queries";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const sortOptions = new Set(["contribution_score", "points", "win_rate", "games"]);
 
 type LeaderboardPageProps = {
