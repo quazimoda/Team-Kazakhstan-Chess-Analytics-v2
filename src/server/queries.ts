@@ -1,4 +1,4 @@
-import { and, count, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
 import { games, leagues, matches, matchParticipations, playerContributions, players, syncJobs } from "@/server/db/schema";
@@ -152,11 +152,21 @@ export async function getLeagues(): Promise<ApiResponse<League[]>> {
   if (!db) return { data: demoLeagues, source: "demo" };
 
   try {
-    const rows = await db.select({ league: leagues, matchCount: count(matches.id) }).from(leagues).leftJoin(matches, eq(matches.leagueId, leagues.id)).groupBy(leagues.id).limit(100);
+    const rows = await db
+      .select({
+        league: leagues,
+        matchCount: sql<number>`(select count(*) from ${matches} where ${matches.leagueId} = ${leagues.id})`,
+        officialMatchCount: sql<number>`(select count(*) from ${matches} where ${matches.leagueId} = ${leagues.id} and ${matches.isOfficial} = 1)`,
+        gameCount: sql<number>`(select count(*) from ${games} inner join ${matches} on ${games.matchId} = ${matches.id} where ${matches.leagueId} = ${leagues.id})`,
+        participationCount: sql<number>`(select count(*) from ${matchParticipations} inner join ${matches} on ${matchParticipations.matchId} = ${matches.id} where ${matches.leagueId} = ${leagues.id})`,
+        contributionCount: sql<number>`(select count(*) from ${playerContributions} where ${playerContributions.leagueId} = ${leagues.id})`,
+      })
+      .from(leagues)
+      .limit(100);
     if (rows.length === 0) return { data: demoLeagues, source: "demo" };
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.league.id), name: row.league.name, slug: row.league.slug, season: row.league.season, status: row.league.status, startsAt: toIso(row.league.startsAt), endsAt: toIso(row.league.endsAt), matchCount: Number(row.matchCount) })),
+      data: rows.map((row: any) => ({ id: String(row.league.id), name: row.league.name, slug: row.league.slug, season: row.league.season, status: row.league.status, startsAt: toIso(row.league.startsAt), endsAt: toIso(row.league.endsAt), matchCount: Number(row.matchCount), officialMatchCount: Number(row.officialMatchCount), gameCount: Number(row.gameCount), participationCount: Number(row.participationCount), contributionCount: Number(row.contributionCount) })),
     };
   } catch (error) {
     logReadFallback("getLeagues", error);

@@ -25,6 +25,10 @@ export type League = {
   startsAt: string | null;
   endsAt: string | null;
   matchCount?: number;
+  officialMatchCount?: number;
+  gameCount?: number;
+  participationCount?: number;
+  contributionCount?: number;
 };
 
 export type Match = {

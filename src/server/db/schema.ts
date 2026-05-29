@@ -39,12 +39,14 @@ export const players = pgTable(
     draws: integer("draws").notNull().default(0),
     losses: integer("losses").notNull().default(0),
     contributionScore: numeric("contribution_score", { precision: 10, scale: 2 }).notNull().default("0"),
+    isTeamMember: integer("is_team_member").notNull().default(0),
+    firstSeenSource: text("first_seen_source"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     rawProfile: jsonb("raw_profile"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => ({ usernameIdx: uniqueIndex("players_username_idx").on(sql`lower(${table.username})`) }),
+  (table) => ({ usernameIdx: uniqueIndex("players_username_idx").on(sql`lower(${table.username})`), teamMemberIdx: index("players_team_member_idx").on(table.isTeamMember) }),
 );
 
 export const leagues = pgTable(
