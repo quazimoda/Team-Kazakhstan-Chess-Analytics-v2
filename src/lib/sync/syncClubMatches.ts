@@ -156,12 +156,14 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
     };
   }
 
-  const [job] = await db
-    .insert(syncJobs)
-    .values({ type: "matches", status: "running", message: `Syncing Chess.com matches for ${clubSlug}`, startedAt, recordsProcessed: 0 })
-    .returning();
+  let job: typeof syncJobs.$inferSelect | null = null;
 
   try {
+    [job] = await db
+      .insert(syncJobs)
+      .values({ type: "matches", status: "running", message: `Syncing Chess.com matches for ${clubSlug}`, startedAt, recordsProcessed: 0 })
+      .returning();
+
     const result = await getClubMatches(clubSlug);
     if (!result.ok) throw new Error(result.error);
 
@@ -227,14 +229,20 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
   } catch (error) {
     const finishedAt = new Date();
     const errorMessage = error instanceof Error ? error.message : "Unknown match sync error";
-    await db
-      .update(syncJobs)
-      .set({ status: "failed", message: "Chess.com match sync failed", finishedAt, recordsProcessed: 0, errorMessage })
-      .where(eq(syncJobs.id, job.id));
+    if (job) {
+      try {
+        await db
+          .update(syncJobs)
+          .set({ status: "failed", message: "Chess.com match sync failed", finishedAt, recordsProcessed: 0, errorMessage })
+          .where(eq(syncJobs.id, job.id));
+      } catch {
+        // Preserve the original failure so the admin route can return JSON even if sync_jobs is unavailable.
+      }
+    }
 
     return {
       source: "database",
-      jobId: String(job.id),
+      jobId: job ? String(job.id) : null,
       status: "failed",
       startedAt: startedAt.toISOString(),
       finishedAt: finishedAt.toISOString(),

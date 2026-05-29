@@ -22,13 +22,51 @@ type ActionState = {
   error: string | null;
 };
 
+function getPayloadError(payload: unknown) {
+  if (!payload || typeof payload !== "object") return null;
+
+  const error = "error" in payload ? payload.error : null;
+  if (typeof error === "string" && error.trim()) return error;
+
+  const errorMessage = "errorMessage" in payload ? payload.errorMessage : null;
+  if (typeof errorMessage === "string" && errorMessage.trim()) return errorMessage;
+
+  return null;
+}
+
 async function postAdminAction<T>(endpoint: string, secret: string): Promise<T> {
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { "x-admin-secret": secret },
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error ?? payload.errorMessage ?? "Admin action failed");
+
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  const isJson = contentType.toLowerCase().includes("application/json");
+  let payload: unknown = null;
+
+  if (text.trim() && isJson) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+  }
+
+  if (!response.ok) {
+    const payloadError = getPayloadError(payload);
+    const textError = text.trim().slice(0, 300);
+    throw new Error(payloadError ?? (textError || `Request failed with status ${response.status}`));
+  }
+
+  if (!text.trim()) {
+    throw new Error("Empty response from admin endpoint");
+  }
+
+  if (!isJson || payload == null) {
+    throw new Error("Invalid JSON response from admin endpoint");
+  }
+
   return payload as T;
 }
 
