@@ -13,9 +13,8 @@ export default async function AdminPage() {
         <Card className="lg:col-span-1">
           <p className="text-sm text-slate-400">Last sync status</p>
           <div className="mt-3 flex items-center gap-3"><Badge tone={latest?.status === "success" ? "green" : "gold"}>{latest?.status ?? "none"}</Badge><span className="text-sm text-slate-300">{formatDateTime(latest?.finishedAt ?? latest?.createdAt)}</span></div>
-          <div className="mt-6 space-y-3">
+          <div className="mt-6">
             <SyncMatchesButton />
-            <button className="w-full rounded-2xl border border-yellow-300/30 px-4 py-3 font-semibold text-yellow-100">Recalculate</button>
           </div>
           <p className="mt-5 rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4 text-sm text-yellow-100">MVP warning: API admin writes are protected with ADMIN_SECRET. Add authenticated roles before production.</p>
         </Card>

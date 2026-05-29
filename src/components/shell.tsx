@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Sidebar, TopNav } from "./navigation";
 
 export function AppShell({ children }: { children: ReactNode }) {

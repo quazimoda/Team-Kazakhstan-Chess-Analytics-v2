@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1780041450000,
-      "tag": "0000_stage2_chesscom_sync",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1780041460000,
-      "tag": "0001_stage3_player_contributions",
+      "when": 1780043017417,
+      "tag": "0000_initial_schema",
       "breakpoints": true
     }
   ]
