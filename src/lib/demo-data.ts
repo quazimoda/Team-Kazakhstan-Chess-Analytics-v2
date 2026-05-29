@@ -9,8 +9,8 @@ export const demoPlayers: Player[] = [
 ];
 
 export const demoLeagues: League[] = [
-  { id: "1", name: "World League", slug: "world-league-2026", season: "2026", status: "active", startsAt: "2026-01-15T00:00:00.000Z", endsAt: null },
-  { id: "2", name: "Asian Clubs Cup", slug: "asian-clubs-cup-2026", season: "Spring 2026", status: "active", startsAt: "2026-03-01T00:00:00.000Z", endsAt: null },
+  { id: "1", name: "World League", slug: "world-league-2026", season: "2026", status: "active", startsAt: "2026-01-15T00:00:00.000Z", endsAt: null, matchCount: 2, officialMatchCount: 2, gameCount: 79, participationCount: 3, contributionCount: 3 },
+  { id: "2", name: "Asian Clubs Cup", slug: "asian-clubs-cup-2026", season: "Spring 2026", status: "active", startsAt: "2026-03-01T00:00:00.000Z", endsAt: null, matchCount: 1, officialMatchCount: 1, gameCount: 0, participationCount: 0, contributionCount: 0 },
 ];
 
 export const demoMatches: Match[] = [

@@ -20,6 +20,11 @@ export default async function LeaguesPage() {
             <dl className="mt-6 grid grid-cols-2 gap-4 text-sm">
               <div><dt className="text-slate-500">Season</dt><dd className="mt-1 text-slate-200">{league.season ?? "—"}</dd></div>
               <div><dt className="text-slate-500">Starts</dt><dd className="mt-1 text-slate-200">{formatDateTime(league.startsAt)}</dd></div>
+              <div><dt className="text-slate-500">Matches</dt><dd className="mt-1 text-slate-200">{league.matchCount ?? 0}</dd></div>
+              <div><dt className="text-slate-500">Official matches</dt><dd className="mt-1 text-slate-200">{league.officialMatchCount ?? 0}</dd></div>
+              <div><dt className="text-slate-500">Games</dt><dd className="mt-1 text-slate-200">{league.gameCount ?? 0}</dd></div>
+              <div><dt className="text-slate-500">Participations</dt><dd className="mt-1 text-slate-200">{league.participationCount ?? 0}</dd></div>
+              <div><dt className="text-slate-500">Contribution rows</dt><dd className="mt-1 text-slate-200">{league.contributionCount ?? 0}</dd></div>
             </dl>
           </Card>
         ))}

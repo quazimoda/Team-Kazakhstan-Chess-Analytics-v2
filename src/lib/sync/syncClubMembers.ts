@@ -66,6 +66,8 @@ async function upsertMember(member: { username: string; payload: MemberRecord })
     avatarUrl: getString(member.payload, ["avatar", "avatar_url", "avatarUrl"]),
     chesscomUrl: getString(member.payload, ["url", "@id"]) ?? chesscomUrlForUsername(member.username),
     rawProfile: member.payload,
+    isTeamMember: 1,
+    firstSeenSource: sql`coalesce(${players.firstSeenSource}, ${"club_members"})`,
     lastSeenAt: new Date(),
     updatedAt: new Date(),
   };
@@ -74,7 +76,7 @@ async function upsertMember(member: { username: string; payload: MemberRecord })
     await db.update(players).set(values).where(eq(players.id, existing.id));
     return existing.id;
   }
-  const [row] = await db.insert(players).values(values).returning({ id: players.id });
+  const [row] = await db.insert(players).values({ ...values, firstSeenSource: "club_members" }).returning({ id: players.id });
   return row.id;
 }
 

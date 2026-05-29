@@ -15,6 +15,13 @@
       "when": 1780043017418,
       "tag": "0001_player_archive_sync_state",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780043017419,
+      "tag": "0002_player_membership",
+      "breakpoints": true
     }
   ]
 }

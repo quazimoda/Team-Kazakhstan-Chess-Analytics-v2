@@ -7,6 +7,7 @@ import { games, matches, matchParticipations, playerArchiveSyncState, players, s
 import { aggregateMatchedGames } from "./playerArchiveAggregation";
 import { findMatchingImportedMatch } from "./matchGameMatcher";
 import { isTimeoutLoss, mapChessComResult, mapPlayerColor, type GameResult } from "./matchDetailsNormalizer";
+import { archivePlayerFirstSeenSource } from "./playerArchiveMembership";
 
 export type { SyncPlayerArchivesMode } from "./playerArchiveSyncOptions";
 
@@ -202,15 +203,20 @@ function normalizeArchiveGame(rawGame: unknown, syncedUsername: string, matchId:
   };
 }
 
-async function upsertPlayer(profile: PlayerProfile) {
+async function upsertPlayer(profile: PlayerProfile, syncedUsername: string) {
   if (!db) throw new Error("DATABASE_URL is not configured; player archive sync requires PostgreSQL");
+  const firstSeenSource = archivePlayerFirstSeenSource(profile.username, syncedUsername);
   const values = { username: profile.username, name: profile.name, title: profile.title, country: profile.country, avatarUrl: profile.avatarUrl, chesscomUrl: profile.chesscomUrl, currentRating: profile.currentRating, rawProfile: profile.rawProfile, lastSeenAt: new Date(), updatedAt: new Date() };
   const [existing] = await db.select().from(players).where(sql`lower(${players.username}) = ${profile.username.toLowerCase()}`).limit(1);
   if (existing) {
-    const [row] = await db.update(players).set(values).where(eq(players.id, existing.id)).returning();
+    const [row] = await db
+      .update(players)
+      .set({ ...values, firstSeenSource: sql`coalesce(${players.firstSeenSource}, ${firstSeenSource})` })
+      .where(eq(players.id, existing.id))
+      .returning();
     return row;
   }
-  const [row] = await db.insert(players).values(values).returning();
+  const [row] = await db.insert(players).values({ ...values, isTeamMember: 0, firstSeenSource }).returning();
   return row;
 }
 
@@ -219,7 +225,13 @@ async function loadUsernames(options: ReturnType<typeof normalizeArchiveSyncOpti
   if (options.usernames?.length || options.mode === "specific") return (options.usernames ?? []).slice(0, options.limitPlayers);
 
   if (options.mode === "retry-failed") {
-    const rows = await db.select({ username: playerArchiveSyncState.username }).from(playerArchiveSyncState).where(and(eq(playerArchiveSyncState.year, target.year), eq(playerArchiveSyncState.month, target.month), eq(playerArchiveSyncState.status, "failed"))).orderBy(asc(playerArchiveSyncState.updatedAt)).limit(options.limitPlayers);
+    const rows = await db
+      .select({ username: playerArchiveSyncState.username })
+      .from(playerArchiveSyncState)
+      .innerJoin(players, sql`lower(${players.username}) = lower(${playerArchiveSyncState.username})`)
+      .where(and(eq(playerArchiveSyncState.year, target.year), eq(playerArchiveSyncState.month, target.month), eq(playerArchiveSyncState.status, "failed"), eq(players.isTeamMember, 1)))
+      .orderBy(asc(playerArchiveSyncState.updatedAt))
+      .limit(options.limitPlayers);
     return rows.map((row) => row.username);
   }
 
@@ -227,7 +239,8 @@ async function loadUsernames(options: ReturnType<typeof normalizeArchiveSyncOpti
   if (options.skipAlreadySynced) {
     conditions.push(notExists(db.select({ id: playerArchiveSyncState.id }).from(playerArchiveSyncState).where(and(sql`lower(${playerArchiveSyncState.username}) = lower(${players.username})`, eq(playerArchiveSyncState.year, target.year), eq(playerArchiveSyncState.month, target.month), eq(playerArchiveSyncState.status, "success")))));
   }
-  const rows = await db.select({ username: players.username }).from(players).where(conditions.length ? and(...conditions) : undefined).orderBy(asc(players.id)).limit(options.limitPlayers);
+  conditions.push(eq(players.isTeamMember, 1));
+  const rows = await db.select({ username: players.username }).from(players).where(and(...conditions)).orderBy(asc(players.id)).limit(options.limitPlayers);
   return rows.map((row) => row.username);
 }
 
@@ -327,7 +340,7 @@ export async function syncPlayerArchives(rawOptions: SyncPlayerArchivesOptions =
         playerGamesMatched += 1;
 
         for (const profile of normalized.profiles) {
-          const row = await upsertPlayer(profile);
+          const row = await upsertPlayer(profile, username);
           playerIdByUsername.set(profile.username.toLowerCase(), row.id);
         }
         matchedGames.push(normalized.game);

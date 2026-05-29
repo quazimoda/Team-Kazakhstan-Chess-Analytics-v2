@@ -54,13 +54,30 @@ type ReclassifySummary = {
 type DataQualitySummary = {
   source: "database" | "demo";
   playersTotal: number;
+  teamMembersTotal: number;
+  opponentPlayersTotal: number;
   archiveSyncedPlayers: number;
+  archiveSyncedTeamMembers: number;
+  archiveBackfillProgressPercent: number;
+  teamMembersWithParticipations: number;
   gamesImported: number;
   participationRows: number;
   contributionRows: number;
   officialMatchesWithParticipations: number;
   unknownMatchesCount: number;
   warnings: string[];
+};
+
+type UnknownMatchReview = {
+  data: Array<{
+    id: number;
+    chesscomMatchId: number | null;
+    name: string;
+    status: string;
+    chesscomUrl: string | null;
+    suggestedClassification: { leagueSlug: string; confidence: number; isOfficialCandidate: boolean; reasons: string[] };
+  }>;
+  limit: number;
 };
 
 type ActionState = {
@@ -128,19 +145,22 @@ async function getAdminAction<T>(endpoint: string, secret: string): Promise<T> {
   return requestAdminAction<T>(endpoint, secret, "GET");
 }
 
-function formatNumber(value: number) {
-  return new Intl.NumberFormat().format(value);
+function formatNumber(value: number | string) {
+  return typeof value === "string" ? value : new Intl.NumberFormat().format(value);
 }
 
 function DataQualityCards({ data }: { data: DataQualitySummary | null }) {
   const cards = [
-    ["Players total", data?.playersTotal],
-    ["Archive synced players", data?.archiveSyncedPlayers],
+    ["Team members", data?.teamMembersTotal],
+    ["Archive synced team members", data?.archiveSyncedTeamMembers],
+    ["Opponent players", data?.opponentPlayersTotal],
     ["Games imported", data?.gamesImported],
     ["Participation rows", data?.participationRows],
     ["Contribution rows", data?.contributionRows],
+    ["Team members with participations", data?.teamMembersWithParticipations],
     ["Official matches with participations", data?.officialMatchesWithParticipations],
     ["Unknown matches", data?.unknownMatchesCount],
+    ["Archive backfill progress", data?.archiveBackfillProgressPercent == null ? undefined : `${data.archiveBackfillProgressPercent}%`],
   ] as const;
 
   return (
@@ -163,6 +183,7 @@ export function SyncMatchesButton() {
   const [recalculate, setRecalculate] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [reclassify, setReclassify] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [dataQuality, setDataQuality] = useState<DataQualitySummary | null>(null);
+  const [unknownMatches, setUnknownMatches] = useState<UnknownMatchReview["data"]>([]);
   const [quality, setQuality] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const isBusy = sync.isRunning || details.isRunning || players.isRunning || archives.isRunning || recalculate.isRunning || reclassify.isRunning || quality.isRunning;
 
@@ -171,6 +192,9 @@ export function SyncMatchesButton() {
     if (!savedSecret) return;
     getAdminAction<DataQualitySummary>("/api/admin/data-quality", savedSecret)
       .then(setDataQuality)
+      .catch(() => undefined);
+    getAdminAction<UnknownMatchReview>("/api/admin/unknown-matches?limit=25", savedSecret)
+      .then((payload) => setUnknownMatches(payload.data))
       .catch(() => undefined);
   }, []);
 
@@ -201,8 +225,12 @@ export function SyncMatchesButton() {
     }
     try {
       window.sessionStorage.setItem("adminSecret", secret);
-      const payload = await getAdminAction<DataQualitySummary>("/api/admin/data-quality", secret);
+      const [payload, unknownPayload] = await Promise.all([
+        getAdminAction<DataQualitySummary>("/api/admin/data-quality", secret),
+        getAdminAction<UnknownMatchReview>("/api/admin/unknown-matches?limit=25", secret),
+      ]);
       setDataQuality(payload);
+      setUnknownMatches(unknownPayload.data);
       setQuality({ isRunning: false, message: `Data quality refreshed from ${payload.source}.`, error: null });
     } catch (actionError) {
       setQuality({ isRunning: false, message: null, error: actionError instanceof Error ? actionError.message : "Data quality refresh failed" });
@@ -212,7 +240,31 @@ export function SyncMatchesButton() {
   return (
     <div className="space-y-3">
       <DataQualityCards data={dataQuality} />
+      {dataQuality ? <p className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 p-4 text-sm text-cyan-100">Next action: keep syncing player archives until archive synced team members reaches 100%, then review unknown matches and recalculate contributions.</p> : null}
       {dataQuality?.warnings.length ? <p className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4 text-sm text-yellow-100">{dataQuality.warnings.slice(0, 4).join(" ")}</p> : null}
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-white">Unknown Match Review</h3>
+            <p className="mt-1 text-sm text-slate-400">First 25 unknown matches with suggested classifications.</p>
+          </div>
+          <button
+            onClick={() => runAction<ReclassifySummary>("/api/admin/reclassify-matches", (summary) => `Reclassified ${summary.processed} matches; updated ${summary.updated}.`, setReclassify)}
+            disabled={isBusy}
+            className="rounded-xl border border-orange-300/30 px-3 py-2 text-sm font-semibold text-orange-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Reclassify Matches
+          </button>
+        </div>
+        <div className="mt-3 max-h-72 space-y-2 overflow-auto">
+          {unknownMatches.length === 0 ? <p className="text-sm text-slate-500">Refresh data quality to load unknown matches.</p> : unknownMatches.map((match) => (
+            <div key={match.id} className="rounded-xl border border-white/10 p-3 text-sm">
+              <p className="font-medium text-slate-100">{match.name}</p>
+              <p className="mt-1 text-slate-400">Suggested: {match.suggestedClassification.leagueSlug} ({Math.round(match.suggestedClassification.confidence * 100)}% confidence) · {match.status}</p>
+            </div>
+          ))}
+        </div>
+      </div>
       <button
         onClick={() => runAction<SyncSummary>("/api/admin/sync/matches", (summary) => `Sync ${summary.status}: ${summary.recordsProcessed} matches processed. Registered: ${summary.buckets.registered ?? 0}, active: ${summary.buckets.in_progress ?? 0}, finished: ${summary.buckets.finished ?? 0}.`, setSync)}
         disabled={isBusy}
