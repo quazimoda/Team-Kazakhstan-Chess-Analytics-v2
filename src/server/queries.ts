@@ -169,35 +169,72 @@ export async function getMatchGames(matchId: number): Promise<ApiResponse<MatchG
 export async function getLeagues(): Promise<ApiResponse<League[]>> {
   if (!db || isExplicitDemoMode()) return { data: demoLeagues, source: "demo" };
 
+  const startedAt = Date.now();
+
   try {
-    const league = alias(leagues, "l");
-    const match = alias(matches, "m");
-    const game = alias(games, "g");
-    const matchParticipation = alias(matchParticipations, "mp");
-    const playerContribution = alias(playerContributions, "pc");
+    const matchStats = db
+      .select({
+        leagueId: matches.leagueId,
+        matchCount: sql<number>`count(*)`.as("match_count"),
+        officialMatchCount: sql<number>`count(*) filter (where ${matches.isOfficial} = 1)`.as("official_match_count"),
+      })
+      .from(matches)
+      .groupBy(matches.leagueId)
+      .as("match_stats");
+
+    const gameStats = db
+      .select({
+        leagueId: matches.leagueId,
+        gameCount: sql<number>`count(${games.id})`.as("game_count"),
+      })
+      .from(games)
+      .innerJoin(matches, eq(games.matchId, matches.id))
+      .groupBy(matches.leagueId)
+      .as("game_stats");
+
+    const participationStats = db
+      .select({
+        leagueId: matches.leagueId,
+        participationCount: sql<number>`count(*)`.as("participation_count"),
+      })
+      .from(matchParticipations)
+      .innerJoin(matches, eq(matchParticipations.matchId, matches.id))
+      .groupBy(matches.leagueId)
+      .as("participation_stats");
+
+    const contributionStats = db
+      .select({
+        leagueId: playerContributions.leagueId,
+        contributionCount: sql<number>`count(*)`.as("contribution_count"),
+      })
+      .from(playerContributions)
+      .groupBy(playerContributions.leagueId)
+      .as("contribution_stats");
 
     const rows = await db
       .select({
-        id: league.id,
-        name: league.name,
-        slug: league.slug,
-        season: league.season,
-        status: league.status,
-        startsAt: league.startsAt,
-        endsAt: league.endsAt,
-        matchCount: sql<number>`count(distinct ${match.id})`,
-        officialMatchCount: sql<number>`count(distinct case when ${match.isOfficial} = 1 then ${match.id} end)`,
-        gameCount: sql<number>`count(distinct ${game.id})`,
-        participationCount: sql<number>`count(distinct (${matchParticipation.matchId}::text || ':' || ${matchParticipation.playerId}::text))`,
-        contributionCount: sql<number>`count(distinct ${playerContribution.playerId})`,
+        id: leagues.id,
+        name: leagues.name,
+        slug: leagues.slug,
+        season: leagues.season,
+        status: leagues.status,
+        startsAt: leagues.startsAt,
+        endsAt: leagues.endsAt,
+        matchCount: sql<number>`coalesce(${matchStats.matchCount}, 0)`,
+        officialMatchCount: sql<number>`coalesce(${matchStats.officialMatchCount}, 0)`,
+        gameCount: sql<number>`coalesce(${gameStats.gameCount}, 0)`,
+        participationCount: sql<number>`coalesce(${participationStats.participationCount}, 0)`,
+        contributionCount: sql<number>`coalesce(${contributionStats.contributionCount}, 0)`,
       })
-      .from(league)
-      .leftJoin(match, eq(match.leagueId, league.id))
-      .leftJoin(game, eq(game.matchId, match.id))
-      .leftJoin(matchParticipation, eq(matchParticipation.matchId, match.id))
-      .leftJoin(playerContribution, eq(playerContribution.leagueId, league.id))
-      .groupBy(league.id, league.name, league.slug, league.season, league.status, league.startsAt, league.endsAt)
-      .orderBy(sql`count(distinct ${match.id}) desc`, league.name);
+      .from(leagues)
+      .leftJoin(matchStats, eq(matchStats.leagueId, leagues.id))
+      .leftJoin(gameStats, eq(gameStats.leagueId, leagues.id))
+      .leftJoin(participationStats, eq(participationStats.leagueId, leagues.id))
+      .leftJoin(contributionStats, eq(contributionStats.leagueId, leagues.id))
+      .orderBy(sql`coalesce(${matchStats.matchCount}, 0) desc`, leagues.name);
+
+    console.info("[server/queries] getLeagues completed", { durationMs: Date.now() - startedAt, rowCount: rows.length });
+
     return {
       source: "database",
       data: rows.map((row: any) => ({ id: String(row.id), name: row.name, slug: row.slug, season: row.season, status: row.status, startsAt: toIso(row.startsAt), endsAt: toIso(row.endsAt), matchCount: Number(row.matchCount), officialMatchCount: Number(row.officialMatchCount), gameCount: Number(row.gameCount), participationCount: Number(row.participationCount), contributionCount: Number(row.contributionCount) })),
