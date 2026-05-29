@@ -1,6 +1,7 @@
 import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { getMatchDetails, getLiveMatchDetails } from "@/lib/chesscom/client";
+import { toDateOrNull, toIsoOrNull } from "@/lib/dates";
 import { db } from "@/server/db";
 import { games, matches, matchParticipations, players, syncJobs } from "@/server/db/schema";
 
@@ -454,11 +455,11 @@ export async function syncMatchDetails(options: { matchId?: number; chesscomMatc
       rated: game.rated,
       pgn: game.pgn,
       result: game.result,
-      endTime: game.endTime,
+      endTime: toDateOrNull(game.endTime),
       rawGame: game.rawGame,
     }).onConflictDoUpdate({
       target: games.chesscomGameUuid,
-      set: { matchId: match.id, whitePlayerId, blackPlayerId, timeClass: game.timeClass, rated: game.rated, pgn: game.pgn, result: game.result, endTime: game.endTime, rawGame: game.rawGame },
+      set: { matchId: match.id, whitePlayerId, blackPlayerId, timeClass: game.timeClass, rated: game.rated, pgn: game.pgn, result: game.result, endTime: toDateOrNull(game.endTime), rawGame: game.rawGame },
     });
   }
 
@@ -477,10 +478,10 @@ export async function syncMatchDetails(options: { matchId?: number; chesscomMatc
       timeoutLosses: participation.timeoutLosses,
       upsetWins: participation.upsetWins,
       avgOpponentRating: participation.avgOpponentRating,
-      lastPlayedAt: participation.lastPlayedAt,
+      lastPlayedAt: toDateOrNull(participation.lastPlayedAt),
     }).onConflictDoUpdate({
       target: [matchParticipations.matchId, matchParticipations.playerId],
-      set: { boardNumber: participation.boardNumber, score: participation.score.toFixed(2), gamesPlayed: participation.gamesPlayed, wins: participation.wins, draws: participation.draws, losses: participation.losses, timeoutLosses: participation.timeoutLosses, upsetWins: participation.upsetWins, avgOpponentRating: participation.avgOpponentRating, lastPlayedAt: participation.lastPlayedAt },
+      set: { boardNumber: participation.boardNumber, score: participation.score.toFixed(2), gamesPlayed: participation.gamesPlayed, wins: participation.wins, draws: participation.draws, losses: participation.losses, timeoutLosses: participation.timeoutLosses, upsetWins: participation.upsetWins, avgOpponentRating: participation.avgOpponentRating, lastPlayedAt: toDateOrNull(participation.lastPlayedAt) },
     });
   }
 
@@ -496,7 +497,7 @@ export async function syncMatchDetailsBatch(options: { limit?: number; onlyOffic
 
   if (!db) {
     const finishedAt = new Date();
-    return { source: "demo", jobId: null, status: "failed", startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), matchesProcessed: 0, playersUpserted: 0, gamesUpserted: 0, participationsUpserted: 0, warnings: [], errors: ["DATABASE_URL is not configured; match detail sync requires PostgreSQL"] };
+    return { source: "demo", jobId: null, status: "failed", startedAt: toIsoOrNull(startedAt) ?? "", finishedAt: toIsoOrNull(finishedAt) ?? "", matchesProcessed: 0, playersUpserted: 0, gamesUpserted: 0, participationsUpserted: 0, warnings: [], errors: ["DATABASE_URL is not configured; match detail sync requires PostgreSQL"] };
   }
 
   let job: typeof syncJobs.$inferSelect | null = null;
@@ -532,7 +533,7 @@ export async function syncMatchDetailsBatch(options: { limit?: number; onlyOffic
     const finishedAt = new Date();
     const finalStatus = errors.length ? "failed" : "success";
     await db.update(syncJobs).set({ status: finalStatus, message: `Synced details for ${matchesProcessed} matches`, finishedAt, recordsProcessed: matchesProcessed, errorMessage: errors.length ? errors.join("\n").slice(0, 2000) : null, payload: { limit, onlyOfficial, status, playersUpserted, gamesUpserted, participationsUpserted, warnings: warnings.slice(0, 50) } }).where(eq(syncJobs.id, job.id));
-    return { source: "database", jobId: String(job.id), status: finalStatus, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), matchesProcessed, playersUpserted, gamesUpserted, participationsUpserted, warnings, errors };
+    return { source: "database", jobId: String(job.id), status: finalStatus, startedAt: toIsoOrNull(startedAt) ?? "", finishedAt: toIsoOrNull(finishedAt) ?? "", matchesProcessed, playersUpserted, gamesUpserted, participationsUpserted, warnings, errors };
   } catch (error) {
     const finishedAt = new Date();
     const message = error instanceof Error ? error.message : "Unknown match detail batch sync error";
@@ -543,6 +544,6 @@ export async function syncMatchDetailsBatch(options: { limit?: number; onlyOffic
         // Preserve the original failure so admin endpoints always return JSON.
       }
     }
-    return { source: "database", jobId: job ? String(job.id) : null, status: "failed", startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), matchesProcessed, playersUpserted, gamesUpserted, participationsUpserted, warnings, errors: [...errors, message] };
+    return { source: "database", jobId: job ? String(job.id) : null, status: "failed", startedAt: toIsoOrNull(startedAt) ?? "", finishedAt: toIsoOrNull(finishedAt) ?? "", matchesProcessed, playersUpserted, gamesUpserted, participationsUpserted, warnings, errors: [...errors, message] };
   }
 }

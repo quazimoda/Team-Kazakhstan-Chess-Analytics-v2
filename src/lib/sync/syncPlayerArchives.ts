@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { getPlayerArchives, getPlayerMonthlyGames } from "@/lib/chesscom/client";
+import { toDateOrNull } from "@/lib/dates";
 import { db } from "@/server/db";
 import { games, matches, matchParticipations, players, syncJobs } from "@/server/db/schema";
 import { aggregateMatchedGames } from "./playerArchiveAggregation";
@@ -283,9 +284,9 @@ export async function syncPlayerArchives(options: SyncPlayerArchivesOptions = {}
     for (const game of matchedGames) {
       const whitePlayerId = game.whiteUsername ? playerIdByUsername.get(game.whiteUsername.toLowerCase()) ?? null : null;
       const blackPlayerId = game.blackUsername ? playerIdByUsername.get(game.blackUsername.toLowerCase()) ?? null : null;
-      await db.insert(games).values({ chesscomGameUuid: game.chesscomGameUuid, matchId: game.matchId, whitePlayerId, blackPlayerId, timeClass: game.timeClass, rated: game.rated, pgn: game.pgn, result: game.result, endTime: game.endTime, rawGame: game.rawGame }).onConflictDoUpdate({
+      await db.insert(games).values({ chesscomGameUuid: game.chesscomGameUuid, matchId: game.matchId, whitePlayerId, blackPlayerId, timeClass: game.timeClass, rated: game.rated, pgn: game.pgn, result: game.result, endTime: toDateOrNull(game.endTime), rawGame: game.rawGame }).onConflictDoUpdate({
         target: games.chesscomGameUuid,
-        set: { matchId: game.matchId, whitePlayerId, blackPlayerId, timeClass: game.timeClass, rated: game.rated, pgn: game.pgn, result: game.result, endTime: game.endTime, rawGame: game.rawGame },
+        set: { matchId: game.matchId, whitePlayerId, blackPlayerId, timeClass: game.timeClass, rated: game.rated, pgn: game.pgn, result: game.result, endTime: toDateOrNull(game.endTime), rawGame: game.rawGame },
       });
       gamesUpserted += 1;
     }
@@ -300,9 +301,9 @@ export async function syncPlayerArchives(options: SyncPlayerArchivesOptions = {}
     for (const aggregate of aggregates) {
       const playerId = playerIdByUsername.get(aggregate.username.toLowerCase());
       if (!playerId) continue;
-      await db.insert(matchParticipations).values({ matchId: aggregate.matchId, playerId, boardNumber: null, score: aggregate.score.toFixed(2), gamesPlayed: aggregate.gamesPlayed, wins: aggregate.wins, draws: aggregate.draws, losses: aggregate.losses, timeoutLosses: aggregate.timeoutLosses, avgOpponentRating: aggregate.avgOpponentRating, lastPlayedAt: aggregate.lastPlayedAt }).onConflictDoUpdate({
+      await db.insert(matchParticipations).values({ matchId: aggregate.matchId, playerId, boardNumber: null, score: aggregate.score.toFixed(2), gamesPlayed: aggregate.gamesPlayed, wins: aggregate.wins, draws: aggregate.draws, losses: aggregate.losses, timeoutLosses: aggregate.timeoutLosses, avgOpponentRating: aggregate.avgOpponentRating, lastPlayedAt: toDateOrNull(aggregate.lastPlayedAt) }).onConflictDoUpdate({
         target: [matchParticipations.matchId, matchParticipations.playerId],
-        set: { boardNumber: null, score: aggregate.score.toFixed(2), gamesPlayed: aggregate.gamesPlayed, wins: aggregate.wins, draws: aggregate.draws, losses: aggregate.losses, timeoutLosses: aggregate.timeoutLosses, avgOpponentRating: aggregate.avgOpponentRating, lastPlayedAt: aggregate.lastPlayedAt },
+        set: { boardNumber: null, score: aggregate.score.toFixed(2), gamesPlayed: aggregate.gamesPlayed, wins: aggregate.wins, draws: aggregate.draws, losses: aggregate.losses, timeoutLosses: aggregate.timeoutLosses, avgOpponentRating: aggregate.avgOpponentRating, lastPlayedAt: toDateOrNull(aggregate.lastPlayedAt) },
       });
       participationsUpserted += 1;
     }
