@@ -44,6 +44,35 @@ export type Match = {
   isOfficialCandidate?: boolean;
 };
 
+export type MatchParticipation = {
+  matchId: string;
+  playerId: string;
+  username: string;
+  title: string | null;
+  boardNumber: number | null;
+  score: number;
+  gamesPlayed: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  timeoutLosses: number;
+  upsetWins: number;
+  avgOpponentRating: number | null;
+  lastPlayedAt: string | null;
+};
+
+export type MatchGame = {
+  id: string;
+  chesscomGameUuid: string;
+  matchId: string | null;
+  whiteUsername: string | null;
+  blackUsername: string | null;
+  timeClass: string | null;
+  rated: boolean;
+  result: "win" | "draw" | "loss" | "unknown";
+  endTime: string | null;
+};
+
 export type LeaderboardRow = {
   rank: number;
   username: string;

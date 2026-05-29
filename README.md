@@ -1,6 +1,6 @@
 # Team Kazakhstan Chess Analytics v2
 
-Chess.com analytics platform for Team Kazakhstan club matches, league tracking, player activity, and contribution scoring. The current app covers the Stage 1–3 MVP surface: dashboard pages, Chess.com match synchronization, official league filtering, player contribution recalculation, and leaderboard views.
+Chess.com analytics platform for Team Kazakhstan club matches, league tracking, player activity, and contribution scoring. The current app covers the Stage 1–4 MVP surface: dashboard pages, Chess.com match synchronization, match detail/player participation ingestion, official league filtering, player contribution recalculation, and leaderboard views.
 
 ## Stack
 
@@ -101,7 +101,18 @@ curl -X POST "$NEXT_PUBLIC_APP_URL/api/admin/sync/matches" \
   -H "x-admin-secret: $ADMIN_SECRET"
 ```
 
-This endpoint fetches Team Kazakhstan Chess.com club matches, classifies them into configured leagues, upserts matches, and records a sync job.
+This endpoint fetches Team Kazakhstan Chess.com club match metadata, classifies matches into configured leagues, upserts rows in `matches`, stores the source payload in `raw_match`, and records a sync job. Match sync does **not** populate `games` or `match_participations`; it only creates/updates the match calendar and scores.
+
+### Sync Chess.com match details
+
+```bash
+curl -X POST "$NEXT_PUBLIC_APP_URL/api/admin/sync/match-details?limit=10&onlyOfficial=true" \
+  -H "x-admin-secret: $ADMIN_SECRET"
+```
+
+This endpoint processes a small Vercel-safe batch of existing `matches`, fetches Chess.com match detail payloads when `raw_match` does not include boards/games, normalizes Team Kazakhstan board participation, upserts `players`, upserts `games`, and upserts `match_participations`. Optional query parameters are `limit` (default `10`, capped at `25`), `onlyOfficial=true|false`, and `status=completed|active|all`.
+
+The leaderboard becomes real only after `match_participations` exists. Run **Sync Matches** first, then **Sync Match Details**, then **Recalculate**. Recalculation aggregates actual participation rows and does not fabricate demo participation data.
 
 ### Recalculate player contributions
 
@@ -110,7 +121,7 @@ curl -X POST "$NEXT_PUBLIC_APP_URL/api/admin/recalculate" \
   -H "x-admin-secret: $ADMIN_SECRET"
 ```
 
-This endpoint aggregates official match participation rows and rewrites player contribution rows for the `all` period. The `/admin` page exposes both **Sync Matches** and **Recalculate** buttons that prompt for `ADMIN_SECRET` and call the real endpoints.
+This endpoint aggregates official match participation rows and rewrites player contribution rows for the `all` period. If match details have not been synced yet, there are no real participation rows to aggregate. The `/admin` page exposes **Sync Matches**, **Sync Match Details**, and **Recalculate** buttons that prompt for `ADMIN_SECRET` and call the real endpoints.
 
 ## Vercel deployment
 
@@ -137,6 +148,7 @@ This endpoint aggregates official match participation rows and rewrites player c
 - `/leaderboard`
 - `/players`
 - `/matches`
+- `/matches/[id]`
 - `/leagues`
 - `/admin`
 
@@ -148,6 +160,7 @@ This endpoint aggregates official match participation rows and rewrites player c
 - `GET /api/leagues`
 - `GET /api/leaderboards`
 - `POST /api/admin/sync/matches`
+- `POST /api/admin/sync/match-details`
 - `POST /api/admin/recalculate`
 
 ## Remaining production hardening

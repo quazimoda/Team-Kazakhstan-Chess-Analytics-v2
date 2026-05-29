@@ -1,9 +1,10 @@
 import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
-import { leagues, matches, playerContributions, players, syncJobs } from "@/server/db/schema";
+import { games, leagues, matches, matchParticipations, playerContributions, players, syncJobs } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { demoLeaderboard, demoLeagues, demoMatches, demoPlayers, demoSummary, demoSyncJobs } from "@/lib/demo-data";
-import type { ApiResponse, LeaderboardRow, League, Match, Player, SyncJob, TeamSummary } from "@/types";
+import type { ApiResponse, LeaderboardRow, League, Match, MatchGame, MatchParticipation, Player, SyncJob, TeamSummary } from "@/types";
 
 function toIso(value: Date | string | null | undefined) {
   return value ? new Date(value).toISOString() : null;
@@ -81,6 +82,70 @@ export async function getMatches(filters: MatchFilters = {}): Promise<ApiRespons
   } catch (error) {
     logReadFallback("getMatches", error);
     return { data: applyFilters(demoMatches), source: "demo" };
+  }
+}
+
+export async function getMatchById(id: number): Promise<ApiResponse<Match | null>> {
+  if (!db) return { data: demoMatches.find((match) => Number(match.id) === id) ?? null, source: "demo" };
+
+  try {
+    const [row] = await db
+      .select({ match: matches, league: leagues })
+      .from(matches)
+      .leftJoin(leagues, eq(matches.leagueId, leagues.id))
+      .where(eq(matches.id, id))
+      .limit(1);
+    if (!row) return { data: null, source: "database" };
+    return {
+      source: "database",
+      data: { id: String(row.match.id), chesscomMatchId: row.match.chesscomMatchId, leagueId: row.match.leagueId ? String(row.match.leagueId) : null, name: row.match.name, opponent: row.match.opponent, status: row.match.status, result: row.match.result, teamScore: toNumber(row.match.teamScore), opponentScore: toNumber(row.match.opponentScore), boardCount: row.match.boardCount, startsAt: toIso(row.match.startsAt), endsAt: toIso(row.match.endsAt), leagueSlug: row.league?.slug ?? classifyLeague(row.match.name).leagueSlug, leagueName: row.league?.name ?? null, isOfficialCandidate: Boolean(row.match.isOfficial) },
+    };
+  } catch (error) {
+    logReadFallback("getMatchById", error);
+    return { data: demoMatches.find((match) => Number(match.id) === id) ?? null, source: "demo" };
+  }
+}
+
+export async function getMatchParticipations(matchId: number): Promise<ApiResponse<MatchParticipation[]>> {
+  if (!db) return { data: [], source: "demo" };
+
+  try {
+    const rows = await db
+      .select({ participation: matchParticipations, player: players })
+      .from(matchParticipations)
+      .innerJoin(players, eq(matchParticipations.playerId, players.id))
+      .where(eq(matchParticipations.matchId, matchId))
+      .orderBy(matchParticipations.boardNumber, players.username);
+    return {
+      source: "database",
+      data: rows.map((row: any) => ({ matchId: String(row.participation.matchId), playerId: String(row.participation.playerId), username: row.player.username, title: row.player.title, boardNumber: row.participation.boardNumber, score: Number(row.participation.score), gamesPlayed: row.participation.gamesPlayed, wins: row.participation.wins, draws: row.participation.draws, losses: row.participation.losses, timeoutLosses: row.participation.timeoutLosses, upsetWins: row.participation.upsetWins, avgOpponentRating: row.participation.avgOpponentRating, lastPlayedAt: toIso(row.participation.lastPlayedAt) })),
+    };
+  } catch (error) {
+    logReadFallback("getMatchParticipations", error);
+    return { data: [], source: "demo" };
+  }
+}
+
+export async function getMatchGames(matchId: number): Promise<ApiResponse<MatchGame[]>> {
+  if (!db) return { data: [], source: "demo" };
+
+  try {
+    const whitePlayer = alias(players, "white_player");
+    const blackPlayer = alias(players, "black_player");
+    const rows = await db
+      .select({ game: games, whiteUsername: whitePlayer.username, blackUsername: blackPlayer.username })
+      .from(games)
+      .leftJoin(whitePlayer, eq(games.whitePlayerId, whitePlayer.id))
+      .leftJoin(blackPlayer, eq(games.blackPlayerId, blackPlayer.id))
+      .where(eq(games.matchId, matchId))
+      .orderBy(games.endTime);
+    return {
+      source: "database",
+      data: rows.map((row: any) => ({ id: String(row.game.id), chesscomGameUuid: row.game.chesscomGameUuid, matchId: row.game.matchId == null ? null : String(row.game.matchId), whiteUsername: row.whiteUsername, blackUsername: row.blackUsername, timeClass: row.game.timeClass, rated: Boolean(row.game.rated), result: row.game.result, endTime: toIso(row.game.endTime) })),
+    };
+  } catch (error) {
+    logReadFallback("getMatchGames", error);
+    return { data: [], source: "demo" };
   }
 }
 
