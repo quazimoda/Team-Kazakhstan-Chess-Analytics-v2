@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { classifyLeague, type LeagueSlug } from "@/lib/analytics/classifyLeague";
+import { classifyLeague, isOfficialLeagueSlug, type LeagueSlug } from "@/lib/analytics/classifyLeague";
 import { getClubMatches } from "@/lib/chesscom/client";
 import { toDateOrNull, toIsoOrNull } from "@/lib/dates";
 import { db } from "@/server/db";
@@ -191,7 +191,7 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
         endsAt: toDateOrNull(match.endsAt),
         chesscomUrl: match.chesscomUrl,
         rawMatch: match.rawMatch,
-        isOfficial: match.leagueSlug !== "unknown" ? 1 : 0,
+        isOfficial: isOfficialLeagueSlug(match.leagueSlug) ? 1 : 0,
         updatedAt: now,
       };
 
