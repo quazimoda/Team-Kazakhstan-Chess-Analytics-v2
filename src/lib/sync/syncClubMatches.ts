@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { classifyLeague, type LeagueSlug } from "@/lib/analytics/classifyLeague";
 import { getClubMatches } from "@/lib/chesscom/client";
+import { toDateOrNull, toIsoOrNull } from "@/lib/dates";
 import { db } from "@/server/db";
 import { matches, syncJobs } from "@/server/db/schema";
 import { seedBaseLeagues } from "@/server/db/seedLeagues";
@@ -148,8 +149,8 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
       source: "demo",
       jobId: null,
       status: "failed",
-      startedAt: startedAt.toISOString(),
-      finishedAt: finishedAt.toISOString(),
+      startedAt: toIsoOrNull(startedAt) ?? "",
+      finishedAt: toIsoOrNull(finishedAt) ?? "",
       recordsProcessed: 0,
       errorMessage: "DATABASE_URL is not configured; match sync requires PostgreSQL",
       buckets,
@@ -186,8 +187,8 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
         teamScore: match.teamScore,
         opponentScore: match.opponentScore,
         boardCount: match.boardCount,
-        startsAt: match.startsAt,
-        endsAt: match.endsAt,
+        startsAt: toDateOrNull(match.startsAt),
+        endsAt: toDateOrNull(match.endsAt),
         chesscomUrl: match.chesscomUrl,
         rawMatch: match.rawMatch,
         isOfficial: match.leagueSlug !== "unknown" ? 1 : 0,
@@ -220,8 +221,8 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
       source: "database",
       jobId: String(job.id),
       status: "success",
-      startedAt: startedAt.toISOString(),
-      finishedAt: finishedAt.toISOString(),
+      startedAt: toIsoOrNull(startedAt) ?? "",
+      finishedAt: toIsoOrNull(finishedAt) ?? "",
       recordsProcessed: normalizedMatches.length,
       errorMessage: null,
       buckets,
@@ -244,8 +245,8 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
       source: "database",
       jobId: job ? String(job.id) : null,
       status: "failed",
-      startedAt: startedAt.toISOString(),
-      finishedAt: finishedAt.toISOString(),
+      startedAt: toIsoOrNull(startedAt) ?? "",
+      finishedAt: toIsoOrNull(finishedAt) ?? "",
       recordsProcessed: 0,
       errorMessage,
       buckets,

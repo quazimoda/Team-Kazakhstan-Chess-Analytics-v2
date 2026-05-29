@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { calculateContributionScore } from "@/lib/analytics/contributionScore";
+import { buildPlayerContributionInsertValues } from "@/lib/analytics/playerContributionInsert";
 import { db } from "@/server/db";
 import { matches, matchParticipations, playerContributions } from "@/server/db/schema";
 
@@ -15,11 +15,6 @@ export type RecalculatePlayerContributionsSummary = {
   rowsWritten: number;
 };
 
-function numeric(value: unknown) {
-  if (value == null) return 0;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
 
 export async function recalculatePlayerContributions(options: RecalculatePlayerContributionsOptions = {}): Promise<RecalculatePlayerContributionsSummary> {
   const period = options.period ?? "all";
@@ -60,33 +55,7 @@ export async function recalculatePlayerContributions(options: RecalculatePlayerC
 
   const now = new Date();
   for (const row of aggregates) {
-    const gamesPlayed = numeric(row.gamesPlayed);
-    const wins = numeric(row.wins);
-    const draws = numeric(row.draws);
-    const losses = numeric(row.losses);
-    const timeoutLosses = numeric(row.timeoutLosses);
-    const upsetWins = numeric(row.upsetWins);
-    const metrics = calculateContributionScore({ games: gamesPlayed, wins, draws, losses, timeoutLosses, upsetWins });
-
-    await db.insert(playerContributions).values({
-      playerId: row.playerId,
-      leagueId: row.leagueId,
-      period,
-      matchesPlayed: numeric(row.matchesPlayed),
-      gamesPlayed,
-      wins,
-      draws,
-      losses,
-      timeoutLosses,
-      upsetWins,
-      points: metrics.points.toFixed(2),
-      score: metrics.points.toFixed(2),
-      winRate: metrics.winRate.toFixed(2),
-      avgOpponentRating: row.avgOpponentRating == null ? null : numeric(row.avgOpponentRating),
-      lastPlayedAt: row.lastPlayedAt,
-      contributionScore: metrics.contributionScore.toFixed(2),
-      calculatedAt: now,
-    });
+    await db.insert(playerContributions).values(buildPlayerContributionInsertValues(row, period, now));
   }
 
   return { source: "database", period, leagueId, rowsWritten: aggregates.length };

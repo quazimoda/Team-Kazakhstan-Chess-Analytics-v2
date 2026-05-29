@@ -3,12 +3,11 @@ import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
 import { games, leagues, matches, matchParticipations, playerContributions, players, syncJobs } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
+import { toIsoOrNull } from "@/lib/dates";
 import { demoLeaderboard, demoLeagues, demoMatches, demoPlayers, demoSummary, demoSyncJobs } from "@/lib/demo-data";
 import type { ApiResponse, LeaderboardRow, League, Match, MatchGame, MatchParticipation, Player, SyncJob, TeamSummary } from "@/types";
 
-function toIso(value: Date | string | null | undefined) {
-  return value ? new Date(value).toISOString() : null;
-}
+const toIso = toIsoOrNull;
 
 function toNumber(value: string | number | null | undefined) {
   return value == null ? null : Number(value);
@@ -173,7 +172,7 @@ export async function getSyncJobs(): Promise<ApiResponse<SyncJob[]>> {
     if (rows.length === 0) return { data: demoSyncJobs, source: "demo" };
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? new Date().toISOString() })),
+      data: rows.map((row: any) => ({ id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? toIso(new Date()) ?? "" })),
     };
   } catch (error) {
     logReadFallback("getSyncJobs", error);
@@ -288,5 +287,5 @@ export async function getTeamSummary(): Promise<ApiResponse<TeamSummary>> {
 export async function createDemoSyncJob(): Promise<ApiResponse<SyncJob>> {
   if (!db) return { data: { ...demoSyncJobs[0], id: crypto.randomUUID(), message: "Demo sync queued; configure DATABASE_URL for persistence" }, source: "demo" };
   const [row] = await db.insert(syncJobs).values({ type: "matches", status: "queued", message: "Match sync queued from MVP admin endpoint" }).returning();
-  return { source: "database", data: { id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? new Date().toISOString() } };
+  return { source: "database", data: { id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? toIso(new Date()) ?? "" } };
 }
