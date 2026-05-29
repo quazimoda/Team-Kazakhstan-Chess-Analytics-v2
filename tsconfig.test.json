@@ -7,9 +7,19 @@
     "noEmit": false,
     "outDir": ".test-build",
     "rootDir": ".",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "incremental": false
   },
-  "include": ["src/**/*.test.ts", "src/lib/analytics/**/*.ts"],
-  "exclude": ["node_modules", ".next", ".test-build"]
+  "include": [
+    "src/**/*.test.ts",
+    "src/lib/analytics/**/*.ts",
+    "src/lib/sync/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    ".test-build"
+  ]
 }

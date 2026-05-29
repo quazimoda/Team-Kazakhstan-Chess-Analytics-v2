@@ -19,6 +19,25 @@ type MatchDetailsSummary = {
   errors: string[];
 };
 
+type SyncPlayersSummary = {
+  status: "success" | "failed";
+  membersFetched: number;
+  playersUpserted: number;
+  warnings: string[];
+  errors: string[];
+};
+
+type PlayerArchivesSummary = {
+  playersProcessed: number;
+  archivesFetched: number;
+  gamesScanned: number;
+  gamesMatched: number;
+  gamesUpserted: number;
+  participationsUpserted: number;
+  warnings: string[];
+  errors: string[];
+};
+
 type RecalculateSummary = {
   source: "database" | "demo";
   period: "all";
@@ -86,8 +105,10 @@ async function postAdminAction<T>(endpoint: string, secret: string): Promise<T> 
 export function SyncMatchesButton() {
   const [sync, setSync] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [details, setDetails] = useState<ActionState>({ isRunning: false, message: null, error: null });
+  const [players, setPlayers] = useState<ActionState>({ isRunning: false, message: null, error: null });
+  const [archives, setArchives] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [recalculate, setRecalculate] = useState<ActionState>({ isRunning: false, message: null, error: null });
-  const isBusy = sync.isRunning || details.isRunning || recalculate.isRunning;
+  const isBusy = sync.isRunning || details.isRunning || players.isRunning || archives.isRunning || recalculate.isRunning;
 
   async function runAction<T>(endpoint: string, onSuccess: (payload: T) => string, setState: (state: ActionState) => void) {
     setState({ isRunning: true, message: null, error: null });
@@ -125,6 +146,27 @@ export function SyncMatchesButton() {
       >
         {details.isRunning ? "Syncing details…" : "Sync Match Details"}
       </button>
+
+      <button
+        onClick={() => runAction<SyncPlayersSummary>("/api/admin/sync/players", (summary) => {
+          const problems = [...summary.warnings, ...summary.errors];
+          return `Player sync ${summary.status}: ${summary.membersFetched} members fetched, ${summary.playersUpserted} players upserted.${problems.length ? ` Warnings/errors: ${problems.slice(0, 5).join("; ")}` : ""}`;
+        }, setPlayers)}
+        disabled={isBusy}
+        className="w-full rounded-2xl bg-sky-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {players.isRunning ? "Syncing players…" : "Sync Players"}
+      </button>
+      <button
+        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?limitPlayers=10", (summary) => {
+          const problems = [...summary.warnings, ...summary.errors];
+          return `Player archives: ${summary.playersProcessed} players processed, ${summary.gamesScanned} games scanned, ${summary.gamesMatched} games matched, ${summary.gamesUpserted} games upserted, ${summary.participationsUpserted} participations upserted.${problems.length ? ` Warnings/errors: ${problems.slice(0, 5).join("; ")}` : ""}`;
+        }, setArchives)}
+        disabled={isBusy}
+        className="w-full rounded-2xl bg-violet-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {archives.isRunning ? "Syncing archives…" : "Sync Player Archives"}
+      </button>
       <button
         onClick={() => runAction<RecalculateSummary>("/api/admin/recalculate", (summary) => `Recalculated ${summary.rowsWritten} contribution rows from ${summary.source} data for period ${summary.period}.`, setRecalculate)}
         disabled={isBusy}
@@ -134,9 +176,13 @@ export function SyncMatchesButton() {
       </button>
       {sync.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{sync.message}</p> : null}
       {details.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{details.message}</p> : null}
+      {players.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{players.message}</p> : null}
+      {archives.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{archives.message}</p> : null}
       {recalculate.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{recalculate.message}</p> : null}
       {sync.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{sync.error}</p> : null}
       {details.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{details.error}</p> : null}
+      {players.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{players.error}</p> : null}
+      {archives.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{archives.error}</p> : null}
       {recalculate.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{recalculate.error}</p> : null}
     </div>
   );
