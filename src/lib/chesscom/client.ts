@@ -31,11 +31,14 @@ const playerArchivesSchema = z.object({ archives: z.array(z.string().url()) });
 
 const playerMonthlyGamesSchema = z.object({ games: z.array(z.unknown()) }).passthrough();
 
+const matchDetailsSchema = z.record(z.string(), z.unknown());
+
 export type ChessComClubMatches = { finished: unknown[]; in_progress: unknown[]; registered: unknown[] };
 export type ChessComPlayerProfile = { player_id?: number; "@id"?: string; url?: string; username: string; title?: string; name?: string; avatar?: string; country?: string; joined?: number; last_online?: number; status?: string };
 export type ChessComPlayerStats = Record<string, unknown>;
 export type ChessComPlayerArchives = { archives: string[] };
 export type ChessComPlayerMonthlyGames = { games: unknown[] };
+export type ChessComMatchDetails = Record<string, unknown>;
 
 export type ChessComResult<T> =
   | { ok: true; data: T; status: number }
@@ -91,4 +94,12 @@ export function getPlayerArchives(username: string) {
 export function getPlayerMonthlyGames(username: string, year: number, month: number) {
   const normalizedMonth = String(month).padStart(2, "0");
   return requestChessCom(`/player/${encodeURIComponent(username)}/games/${year}/${normalizedMonth}`, playerMonthlyGamesSchema);
+}
+
+export function getMatchDetails(matchId: number) {
+  return requestChessCom(`/match/${encodeURIComponent(String(matchId))}`, matchDetailsSchema);
+}
+
+export function getLiveMatchDetails(matchId: number) {
+  return requestChessCom(`/match/live/${encodeURIComponent(String(matchId))}`, matchDetailsSchema);
 }

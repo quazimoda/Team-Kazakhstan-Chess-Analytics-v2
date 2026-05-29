@@ -9,6 +9,16 @@ type SyncSummary = {
   buckets: Record<string, number>;
 };
 
+type MatchDetailsSummary = {
+  status: "success" | "failed";
+  matchesProcessed: number;
+  playersUpserted: number;
+  gamesUpserted: number;
+  participationsUpserted: number;
+  warnings: string[];
+  errors: string[];
+};
+
 type RecalculateSummary = {
   source: "database" | "demo";
   period: "all";
@@ -30,6 +40,9 @@ function getPayloadError(payload: unknown) {
 
   const errorMessage = "errorMessage" in payload ? payload.errorMessage : null;
   if (typeof errorMessage === "string" && errorMessage.trim()) return errorMessage;
+
+  const errors = "errors" in payload ? payload.errors : null;
+  if (Array.isArray(errors) && errors.length > 0) return errors.join("; ");
 
   return null;
 }
@@ -72,7 +85,9 @@ async function postAdminAction<T>(endpoint: string, secret: string): Promise<T> 
 
 export function SyncMatchesButton() {
   const [sync, setSync] = useState<ActionState>({ isRunning: false, message: null, error: null });
+  const [details, setDetails] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [recalculate, setRecalculate] = useState<ActionState>({ isRunning: false, message: null, error: null });
+  const isBusy = sync.isRunning || details.isRunning || recalculate.isRunning;
 
   async function runAction<T>(endpoint: string, onSuccess: (payload: T) => string, setState: (state: ActionState) => void) {
     setState({ isRunning: true, message: null, error: null });
@@ -95,21 +110,33 @@ export function SyncMatchesButton() {
     <div className="space-y-3">
       <button
         onClick={() => runAction<SyncSummary>("/api/admin/sync/matches", (summary) => `Sync ${summary.status}: ${summary.recordsProcessed} matches processed. Registered: ${summary.buckets.registered ?? 0}, active: ${summary.buckets.in_progress ?? 0}, finished: ${summary.buckets.finished ?? 0}.`, setSync)}
-        disabled={sync.isRunning || recalculate.isRunning}
+        disabled={isBusy}
         className="w-full rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {sync.isRunning ? "Syncing…" : "Sync Matches"}
       </button>
       <button
+        onClick={() => runAction<MatchDetailsSummary>("/api/admin/sync/match-details?limit=10&onlyOfficial=true", (summary) => {
+          const problems = [...summary.warnings, ...summary.errors];
+          return `Match details ${summary.status}: ${summary.matchesProcessed} matches processed, ${summary.playersUpserted} players upserted, ${summary.gamesUpserted} games upserted, ${summary.participationsUpserted} participations upserted.${problems.length ? ` Warnings/errors: ${problems.slice(0, 5).join("; ")}` : ""}`;
+        }, setDetails)}
+        disabled={isBusy}
+        className="w-full rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {details.isRunning ? "Syncing details…" : "Sync Match Details"}
+      </button>
+      <button
         onClick={() => runAction<RecalculateSummary>("/api/admin/recalculate", (summary) => `Recalculated ${summary.rowsWritten} contribution rows from ${summary.source} data for period ${summary.period}.`, setRecalculate)}
-        disabled={sync.isRunning || recalculate.isRunning}
+        disabled={isBusy}
         className="w-full rounded-2xl border border-yellow-300/30 px-4 py-3 font-semibold text-yellow-100 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {recalculate.isRunning ? "Recalculating…" : "Recalculate"}
       </button>
       {sync.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{sync.message}</p> : null}
+      {details.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{details.message}</p> : null}
       {recalculate.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{recalculate.message}</p> : null}
       {sync.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{sync.error}</p> : null}
+      {details.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{details.error}</p> : null}
       {recalculate.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{recalculate.error}</p> : null}
     </div>
   );
