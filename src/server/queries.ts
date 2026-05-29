@@ -170,20 +170,37 @@ export async function getLeagues(): Promise<ApiResponse<League[]>> {
   if (!db || isExplicitDemoMode()) return { data: demoLeagues, source: "demo" };
 
   try {
+    const league = alias(leagues, "l");
+    const match = alias(matches, "m");
+    const game = alias(games, "g");
+    const matchParticipation = alias(matchParticipations, "mp");
+    const playerContribution = alias(playerContributions, "pc");
+
     const rows = await db
       .select({
-        league: leagues,
-        matchCount: sql<number>`(select count(*) from ${matches} where ${matches.leagueId} = ${leagues.id})`,
-        officialMatchCount: sql<number>`(select count(*) from ${matches} where ${matches.leagueId} = ${leagues.id} and ${matches.isOfficial} = 1)`,
-        gameCount: sql<number>`(select count(*) from ${games} inner join ${matches} on ${games.matchId} = ${matches.id} where ${matches.leagueId} = ${leagues.id})`,
-        participationCount: sql<number>`(select count(*) from ${matchParticipations} inner join ${matches} on ${matchParticipations.matchId} = ${matches.id} where ${matches.leagueId} = ${leagues.id})`,
-        contributionCount: sql<number>`(select count(*) from ${playerContributions} where ${playerContributions.leagueId} = ${leagues.id})`,
+        id: league.id,
+        name: league.name,
+        slug: league.slug,
+        season: league.season,
+        status: league.status,
+        startsAt: league.startsAt,
+        endsAt: league.endsAt,
+        matchCount: sql<number>`count(distinct ${match.id})`,
+        officialMatchCount: sql<number>`count(distinct case when ${match.isOfficial} = 1 then ${match.id} end)`,
+        gameCount: sql<number>`count(distinct ${game.id})`,
+        participationCount: sql<number>`count(distinct (${matchParticipation.matchId}::text || ':' || ${matchParticipation.playerId}::text))`,
+        contributionCount: sql<number>`count(distinct ${playerContribution.playerId})`,
       })
-      .from(leagues)
-      .limit(100);
+      .from(league)
+      .leftJoin(match, eq(match.leagueId, league.id))
+      .leftJoin(game, eq(game.matchId, match.id))
+      .leftJoin(matchParticipation, eq(matchParticipation.matchId, match.id))
+      .leftJoin(playerContribution, eq(playerContribution.leagueId, league.id))
+      .groupBy(league.id, league.name, league.slug, league.season, league.status, league.startsAt, league.endsAt)
+      .orderBy(sql`count(distinct ${match.id}) desc`, league.name);
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.league.id), name: row.league.name, slug: row.league.slug, season: row.league.season, status: row.league.status, startsAt: toIso(row.league.startsAt), endsAt: toIso(row.league.endsAt), matchCount: Number(row.matchCount), officialMatchCount: Number(row.officialMatchCount), gameCount: Number(row.gameCount), participationCount: Number(row.participationCount), contributionCount: Number(row.contributionCount) })),
+      data: rows.map((row: any) => ({ id: String(row.id), name: row.name, slug: row.slug, season: row.season, status: row.status, startsAt: toIso(row.startsAt), endsAt: toIso(row.endsAt), matchCount: Number(row.matchCount), officialMatchCount: Number(row.officialMatchCount), gameCount: Number(row.gameCount), participationCount: Number(row.participationCount), contributionCount: Number(row.contributionCount) })),
     };
   } catch (error) {
     const readError = describeReadError(error);
