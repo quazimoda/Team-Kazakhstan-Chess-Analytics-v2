@@ -1,6 +1,7 @@
-import { desc } from "drizzle-orm";
+import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { db } from "@/server/db";
 import { leagues, matches, players, syncJobs } from "@/server/db/schema";
+import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { demoLeaderboard, demoLeagues, demoMatches, demoPlayers, demoSummary, demoSyncJobs } from "@/lib/demo-data";
 import type { ApiResponse, LeaderboardRow, League, Match, Player, SyncJob, TeamSummary } from "@/types";
 
@@ -22,13 +23,36 @@ export async function getPlayers(): Promise<ApiResponse<Player[]>> {
   };
 }
 
-export async function getMatches(): Promise<ApiResponse<Match[]>> {
-  if (!db) return { data: demoMatches, source: "demo" };
-  const rows = await db.select().from(matches).orderBy(desc(matches.startsAt)).limit(100);
-  if (rows.length === 0) return { data: demoMatches, source: "demo" };
+export type MatchFilters = { official?: "official" | "all"; league?: string };
+
+export async function getMatches(filters: MatchFilters = {}): Promise<ApiResponse<Match[]>> {
+  const isOfficialOnly = filters.official === "official";
+  const selectedLeague = filters.league && filters.league !== "all" ? filters.league : null;
+  const applyFilters = (rows: Match[]) => rows.filter((match) => {
+    const classification = classifyLeague(match.name);
+    const leagueSlug = match.leagueSlug ?? classification.leagueSlug;
+    if (isOfficialOnly && !classification.isOfficialCandidate) return false;
+    if (selectedLeague && leagueSlug !== selectedLeague) return false;
+    return true;
+  });
+
+  if (!db) return { data: applyFilters(demoMatches), source: "demo" };
+
+  const conditions: SQL[] = [];
+  if (selectedLeague) conditions.push(eq(leagues.slug, selectedLeague));
+  if (isOfficialOnly) conditions.push(sql`${leagues.slug} is not null and ${leagues.slug} <> 'unknown'`);
+
+  const rows = await db
+    .select({ match: matches, league: leagues })
+    .from(matches)
+    .leftJoin(leagues, eq(matches.leagueId, leagues.id))
+    .where(conditions.length ? (conditions.length === 1 ? conditions[0] : and(...conditions)) : undefined)
+    .orderBy(desc(matches.startsAt))
+    .limit(100);
+  if (rows.length === 0) return { data: applyFilters(demoMatches), source: "demo" };
   return {
     source: "database",
-    data: rows.map((row: any) => ({ id: String(row.id), chesscomMatchId: row.chesscomMatchId, leagueId: row.leagueId ? String(row.leagueId) : null, name: row.name, opponent: row.opponent, status: row.status, result: row.result, teamScore: toNumber(row.teamScore), opponentScore: toNumber(row.opponentScore), boardCount: row.boardCount, startsAt: toIso(row.startsAt), endsAt: toIso(row.endsAt) })),
+    data: rows.map((row: any) => ({ id: String(row.match.id), chesscomMatchId: row.match.chesscomMatchId, leagueId: row.match.leagueId ? String(row.match.leagueId) : null, name: row.match.name, opponent: row.match.opponent, status: row.match.status, result: row.match.result, teamScore: toNumber(row.match.teamScore), opponentScore: toNumber(row.match.opponentScore), boardCount: row.match.boardCount, startsAt: toIso(row.match.startsAt), endsAt: toIso(row.match.endsAt), leagueSlug: row.league?.slug ?? classifyLeague(row.match.name).leagueSlug, leagueName: row.league?.name ?? null, isOfficialCandidate: row.league?.slug ? row.league.slug !== "unknown" : classifyLeague(row.match.name).isOfficialCandidate })),
   };
 }
 
@@ -48,7 +72,7 @@ export async function getSyncJobs(): Promise<ApiResponse<SyncJob[]>> {
   if (rows.length === 0) return { data: demoSyncJobs, source: "demo" };
   return {
     source: "database",
-    data: rows.map((row: any) => ({ id: String(row.id), type: row.type, status: row.status, message: row.message, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? new Date().toISOString() })),
+    data: rows.map((row: any) => ({ id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? new Date().toISOString() })),
   };
 }
 
@@ -81,5 +105,5 @@ export async function getTeamSummary(): Promise<ApiResponse<TeamSummary>> {
 export async function createDemoSyncJob(): Promise<ApiResponse<SyncJob>> {
   if (!db) return { data: { ...demoSyncJobs[0], id: crypto.randomUUID(), message: "Demo sync queued; configure DATABASE_URL for persistence" }, source: "demo" };
   const [row] = await db.insert(syncJobs).values({ type: "matches", status: "queued", message: "Match sync queued from MVP admin endpoint" }).returning();
-  return { source: "database", data: { id: String(row.id), type: row.type, status: row.status, message: row.message, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? new Date().toISOString() } };
+  return { source: "database", data: { id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? new Date().toISOString() } };
 }

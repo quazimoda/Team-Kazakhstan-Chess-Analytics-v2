@@ -142,6 +142,8 @@ export const syncJobs = pgTable(
     status: syncJobStatusEnum("status").notNull().default("queued"),
     message: text("message"),
     payload: jsonb("payload"),
+    recordsProcessed: integer("records_processed").notNull().default(0),
+    errorMessage: text("error_message"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

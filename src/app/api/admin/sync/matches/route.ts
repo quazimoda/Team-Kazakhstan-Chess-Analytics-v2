@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/env";
-import { createDemoSyncJob } from "@/server/queries";
+import { syncClubMatches } from "@/lib/sync/syncClubMatches";
 
 export async function POST(request: NextRequest) {
   const secret = request.headers.get("x-admin-secret") ?? request.nextUrl.searchParams.get("secret");
@@ -8,5 +8,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid ADMIN_SECRET" }, { status: 401 });
   }
 
-  return NextResponse.json(await createDemoSyncJob(), { status: 202 });
+  const summary = await syncClubMatches();
+  return NextResponse.json(summary, { status: summary.status === "success" ? 200 : 500 });
 }
