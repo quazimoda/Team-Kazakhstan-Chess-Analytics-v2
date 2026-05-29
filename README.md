@@ -36,7 +36,7 @@ Chess.com analytics platform for Team Kazakhstan club matches, league tracking, 
 
 5. Open <http://localhost:3000>.
 
-Without `DATABASE_URL`, read-only pages and APIs use demo fallback data so the UI stays runnable. Admin write actions still require a PostgreSQL database for real persistence.
+Without `DATABASE_URL`, read-only pages and APIs use demo fallback data so the UI stays runnable. If `DATABASE_URL` is configured but read tables are unavailable, read-only pages and APIs log the database error and return the same demo fallback data. Admin write actions still require a PostgreSQL database for real persistence.
 
 ## Environment variables
 
@@ -121,13 +121,15 @@ This endpoint aggregates official match participation rows and rewrites player c
    - `ADMIN_SECRET`
    - `CHESSCOM_USER_AGENT`
    - `NEXT_PUBLIC_APP_URL`
-4. Apply database migrations before or during release:
+4. Vercel builds no longer require database tables to exist because DB-backed App Router pages are rendered dynamically and read queries fall back to demo data when tables are missing or unavailable.
+
+5. Real production data still requires running migrations before or during release:
 
    ```bash
    DATABASE_URL="postgresql://USER:PASSWORD@HOST/db?sslmode=require" npm run db:migrate
    ```
 
-5. Deploy. Vercel will run the Next.js build from `npm run build`.
+6. Deploy. Vercel will run the Next.js build from `npm run build`.
 
 ## Implemented routes
 

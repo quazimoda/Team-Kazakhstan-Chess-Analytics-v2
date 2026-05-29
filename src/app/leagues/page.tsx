@@ -2,6 +2,9 @@ import { Badge, Card, PageHeader } from "@/components/ui";
 import { formatDateTime } from "@/lib/utils";
 import { getLeagues } from "@/server/queries";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export default async function LeaguesPage() {
   const leagues = await getLeagues();
   return (
