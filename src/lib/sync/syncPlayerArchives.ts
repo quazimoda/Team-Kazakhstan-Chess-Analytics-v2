@@ -1,11 +1,14 @@
-import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, notExists, sql, type SQL } from "drizzle-orm";
 import { getPlayerArchives, getPlayerMonthlyGames } from "@/lib/chesscom/client";
 import { toDateOrNull } from "@/lib/dates";
+import { normalizeArchiveSyncOptions, type SyncPlayerArchivesMode } from "./playerArchiveSyncOptions";
 import { db } from "@/server/db";
-import { games, matches, matchParticipations, players, syncJobs } from "@/server/db/schema";
+import { games, matches, matchParticipations, playerArchiveSyncState, players, syncJobs } from "@/server/db/schema";
 import { aggregateMatchedGames } from "./playerArchiveAggregation";
 import { findMatchingImportedMatch } from "./matchGameMatcher";
 import { isTimeoutLoss, mapChessComResult, mapPlayerColor, type GameResult } from "./matchDetailsNormalizer";
+
+export type { SyncPlayerArchivesMode } from "./playerArchiveSyncOptions";
 
 export type SyncPlayerArchivesOptions = {
   usernames?: string[];
@@ -14,9 +17,16 @@ export type SyncPlayerArchivesOptions = {
   limitPlayers?: number;
   matchId?: number;
   onlyOfficial?: boolean;
+  mode?: SyncPlayerArchivesMode;
+  skipAlreadySynced?: boolean;
 };
 
 export type SyncPlayerArchivesSummary = {
+  mode: SyncPlayerArchivesMode;
+  year: number;
+  month: number;
+  skipAlreadySynced: boolean;
+  playersSelected: number;
   playersProcessed: number;
   archivesFetched: number;
   gamesScanned: number;
@@ -120,10 +130,8 @@ function archiveFromUrl(url: string): ArchiveMonth | null {
   return { year: Number(match[1]), month: Number(match[2]), url };
 }
 
-function currentAndPreviousMonth(now = new Date()) {
-  const current = { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 };
-  const previousDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-  return [current, { year: previousDate.getUTCFullYear(), month: previousDate.getUTCMonth() + 1 }];
+function currentMonth(now = new Date()) {
+  return { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 };
 }
 
 function monthForMatch(match: typeof matches.$inferSelect) {
@@ -136,18 +144,19 @@ function monthForMatch(match: typeof matches.$inferSelect) {
   return { year: startsAt.getUTCFullYear(), month: startsAt.getUTCMonth() + 1 };
 }
 
-function selectArchiveMonths(archives: string[], options: SyncPlayerArchivesOptions, match: typeof matches.$inferSelect | null, warnings: string[]) {
-  const available = new Map(archives.map(archiveFromUrl).filter((archive): archive is ArchiveMonth => Boolean(archive)).map((archive) => [`${archive.year}-${archive.month}`, archive]));
-  const requested = options.year && options.month ? [{ year: options.year, month: options.month }] : match ? [monthForMatch(match)].filter((entry): entry is { year: number; month: number } => Boolean(entry)) : currentAndPreviousMonth();
+function resolveTargetMonth(options: SyncPlayerArchivesOptions, match: typeof matches.$inferSelect | null) {
+  if (options.year && options.month) return { year: options.year, month: options.month };
+  if (match) return monthForMatch(match) ?? currentMonth();
+  return currentMonth();
+}
 
-  const selected: ArchiveMonth[] = [];
-  for (const request of requested) {
-    const key = `${request.year}-${request.month}`;
-    const found = available.get(key);
-    if (found) selected.push(found);
-    else warnings.push(`Archive ${request.year}/${String(request.month).padStart(2, "0")} was not listed by Chess.com and was skipped.`);
-  }
-  return selected;
+function selectArchiveMonth(archives: string[], target: { year: number; month: number }, warnings: string[]) {
+  const available = new Map(archives.map(archiveFromUrl).filter((archive): archive is ArchiveMonth => Boolean(archive)).map((archive) => [`${archive.year}-${archive.month}`, archive]));
+  const key = `${target.year}-${target.month}`;
+  const found = available.get(key);
+  if (found) return found;
+  warnings.push(`Archive ${target.year}/${String(target.month).padStart(2, "0")} was not listed by Chess.com and was skipped.`);
+  return null;
 }
 
 function normalizeArchiveGame(rawGame: unknown, syncedUsername: string, matchId: number): { profiles: PlayerProfile[]; game: MatchedArchiveGame | null } {
@@ -205,12 +214,37 @@ async function upsertPlayer(profile: PlayerProfile) {
   return row;
 }
 
-async function loadUsernames(options: SyncPlayerArchivesOptions) {
+async function loadUsernames(options: ReturnType<typeof normalizeArchiveSyncOptions>, target: { year: number; month: number }) {
   if (!db) throw new Error("DATABASE_URL is not configured; player archive sync requires PostgreSQL");
-  const limit = Math.min(Math.max(options.limitPlayers ?? 10, 1), 50);
-  if (options.usernames?.length) return options.usernames.slice(0, limit);
-  const rows = await db.select({ username: players.username }).from(players).orderBy(asc(players.id)).limit(limit);
+  if (options.usernames?.length || options.mode === "specific") return (options.usernames ?? []).slice(0, options.limitPlayers);
+
+  if (options.mode === "retry-failed") {
+    const rows = await db.select({ username: playerArchiveSyncState.username }).from(playerArchiveSyncState).where(and(eq(playerArchiveSyncState.year, target.year), eq(playerArchiveSyncState.month, target.month), eq(playerArchiveSyncState.status, "failed"))).orderBy(asc(playerArchiveSyncState.updatedAt)).limit(options.limitPlayers);
+    return rows.map((row) => row.username);
+  }
+
+  const conditions: SQL[] = [];
+  if (options.skipAlreadySynced) {
+    conditions.push(notExists(db.select({ id: playerArchiveSyncState.id }).from(playerArchiveSyncState).where(and(sql`lower(${playerArchiveSyncState.username}) = lower(${players.username})`, eq(playerArchiveSyncState.year, target.year), eq(playerArchiveSyncState.month, target.month), eq(playerArchiveSyncState.status, "success")))));
+  }
+  const rows = await db.select({ username: players.username }).from(players).where(conditions.length ? and(...conditions) : undefined).orderBy(asc(players.id)).limit(options.limitPlayers);
   return rows.map((row) => row.username);
+}
+
+async function markArchiveSyncStarted(username: string, target: { year: number; month: number }) {
+  if (!db) throw new Error("DATABASE_URL is not configured; player archive sync requires PostgreSQL");
+  const now = new Date();
+  const stateUsername = username.toLowerCase();
+  const [row] = await db.insert(playerArchiveSyncState).values({ username: stateUsername, year: target.year, month: target.month, status: "running", startedAt: now, finishedAt: null, updatedAt: now, gamesScanned: 0, gamesMatched: 0, gamesUpserted: 0, participationsUpserted: 0, errorMessage: null }).onConflictDoUpdate({
+    target: [playerArchiveSyncState.username, playerArchiveSyncState.year, playerArchiveSyncState.month],
+    set: { username: stateUsername, status: "running", startedAt: now, finishedAt: null, updatedAt: now, gamesScanned: 0, gamesMatched: 0, gamesUpserted: 0, participationsUpserted: 0, errorMessage: null },
+  }).returning();
+  return row;
+}
+
+async function markArchiveSyncFinished(username: string, target: { year: number; month: number }, values: { status: "success" | "failed" | "skipped"; gamesScanned: number; gamesMatched: number; gamesUpserted: number; participationsUpserted: number; errorMessage?: string | null }) {
+  if (!db) throw new Error("DATABASE_URL is not configured; player archive sync requires PostgreSQL");
+  await db.update(playerArchiveSyncState).set({ ...values, errorMessage: values.errorMessage?.slice(0, 2000) ?? null, finishedAt: new Date(), updatedAt: new Date() }).where(and(sql`lower(${playerArchiveSyncState.username}) = ${username.toLowerCase()}`, eq(playerArchiveSyncState.year, target.year), eq(playerArchiveSyncState.month, target.month)));
 }
 
 async function loadImportedMatches(options: SyncPlayerArchivesOptions) {
@@ -221,10 +255,12 @@ async function loadImportedMatches(options: SyncPlayerArchivesOptions) {
   return db.select().from(matches).where(conditions.length ? and(...conditions) : undefined).orderBy(asc(matches.id));
 }
 
-export async function syncPlayerArchives(options: SyncPlayerArchivesOptions = {}): Promise<SyncPlayerArchivesSummary> {
-  if (!db) return { playersProcessed: 0, archivesFetched: 0, gamesScanned: 0, gamesMatched: 0, gamesUpserted: 0, participationsUpserted: 0, warnings: [], errors: ["DATABASE_URL is not configured; player archive sync requires PostgreSQL"] };
+export async function syncPlayerArchives(rawOptions: SyncPlayerArchivesOptions = {}): Promise<SyncPlayerArchivesSummary> {
+  const options = normalizeArchiveSyncOptions(rawOptions);
+  const fallbackTarget = currentMonth();
+  if (!db) return { mode: options.mode, year: fallbackTarget.year, month: fallbackTarget.month, skipAlreadySynced: options.skipAlreadySynced, playersSelected: 0, playersProcessed: 0, archivesFetched: 0, gamesScanned: 0, gamesMatched: 0, gamesUpserted: 0, participationsUpserted: 0, warnings: [], errors: ["DATABASE_URL is not configured; player archive sync requires PostgreSQL"] };
 
-  const warnings = ["Default player archive sync is intentionally capped. Full historical backfill requires batches or a background worker."];
+  const warnings = ["Player archive sync is capped at 25 players per request. Continue backfill with repeated next batches or retry-failed batches."];
   const errors: string[] = [];
   let playersProcessed = 0;
   let archivesFetched = 0;
@@ -233,52 +269,71 @@ export async function syncPlayerArchives(options: SyncPlayerArchivesOptions = {}
   let gamesUpserted = 0;
   let participationsUpserted = 0;
   let job: typeof syncJobs.$inferSelect | null = null;
+  let targetMonth = fallbackTarget;
 
   try {
-    const usernames = await loadUsernames(options);
     const importedMatches = await loadImportedMatches(options);
     const matchForMonth = options.matchId ? importedMatches[0] ?? null : null;
     if (options.matchId && !matchForMonth) warnings.push(`No imported match found for matchId=${options.matchId}.`);
-    if (!usernames.length) warnings.push("No players available to scan. Run Sync Players first or pass explicit usernames.");
+    const target = resolveTargetMonth(options, matchForMonth);
+    targetMonth = target;
+    const usernames = await loadUsernames(options, target);
+    if (!usernames.length) warnings.push("No players available to scan for the target month. Run Sync Players first, choose retry-failed, or pass a specific username.");
 
-    [job] = await db.insert(syncJobs).values({ type: "games", status: "running", message: "Syncing Chess.com player archives", startedAt: new Date(), recordsProcessed: 0, payload: { ...options, limitPlayers: Math.min(Math.max(options.limitPlayers ?? 10, 1), 50) } }).returning();
+    [job] = await db.insert(syncJobs).values({ type: "games", status: "running", message: `Syncing ${target.year}/${String(target.month).padStart(2, "0")} Chess.com player archives`, startedAt: new Date(), recordsProcessed: 0, payload: { ...options, year: target.year, month: target.month } }).returning();
 
     const playerIdByUsername = new Map<string, number>();
     const matchedGames: MatchedArchiveGame[] = [];
 
     for (const username of usernames) {
-      const archives = await getPlayerArchives(username);
       playersProcessed += 1;
+      const playerStartIndex = matchedGames.length;
+      let playerGamesScanned = 0;
+      let playerGamesMatched = 0;
+      await markArchiveSyncStarted(username, target);
+
+      const archives = await getPlayerArchives(username);
       if (!archives.ok) {
-        errors.push(`${username}: ${archives.error}`);
+        const message = `${username}: ${archives.error}`;
+        errors.push(message);
+        await markArchiveSyncFinished(username, target, { status: "failed", gamesScanned: 0, gamesMatched: 0, gamesUpserted: 0, participationsUpserted: 0, errorMessage: archives.error });
         continue;
       }
 
-      const selectedMonths = selectArchiveMonths(archives.data.archives, options, matchForMonth, warnings).slice(0, 2);
-      for (const archive of selectedMonths) {
-        const monthly = await getPlayerMonthlyGames(username, archive.year, archive.month);
-        archivesFetched += 1;
-        if (!monthly.ok) {
-          errors.push(`${username} ${archive.year}/${archive.month}: ${monthly.error}`);
-          continue;
-        }
-
-        for (const rawGame of monthly.data.games) {
-          const gameRecord = asRecord(rawGame);
-          gamesScanned += 1;
-          const importedMatch = findMatchingImportedMatch({ url: getString(gameRecord, ["url"]), pgn: getString(gameRecord, ["pgn"]) }, importedMatches);
-          if (!importedMatch) continue;
-          const normalized = normalizeArchiveGame(rawGame, username, importedMatch.id);
-          if (!normalized.game) continue;
-          gamesMatched += 1;
-
-          for (const profile of normalized.profiles) {
-            const row = await upsertPlayer(profile);
-            playerIdByUsername.set(profile.username.toLowerCase(), row.id);
-          }
-          matchedGames.push(normalized.game);
-        }
+      const archive = selectArchiveMonth(archives.data.archives, target, warnings);
+      if (!archive) {
+        await markArchiveSyncFinished(username, target, { status: "success", gamesScanned: 0, gamesMatched: 0, gamesUpserted: 0, participationsUpserted: 0, errorMessage: null });
+        continue;
       }
+
+      const monthly = await getPlayerMonthlyGames(username, archive.year, archive.month);
+      archivesFetched += 1;
+      if (!monthly.ok) {
+        const message = `${username} ${archive.year}/${archive.month}: ${monthly.error}`;
+        errors.push(message);
+        await markArchiveSyncFinished(username, target, { status: "failed", gamesScanned: 0, gamesMatched: 0, gamesUpserted: 0, participationsUpserted: 0, errorMessage: monthly.error });
+        continue;
+      }
+
+      for (const rawGame of monthly.data.games) {
+        const gameRecord = asRecord(rawGame);
+        gamesScanned += 1;
+        playerGamesScanned += 1;
+        const importedMatch = findMatchingImportedMatch({ url: getString(gameRecord, ["url"]), pgn: getString(gameRecord, ["pgn"]) }, importedMatches);
+        if (!importedMatch) continue;
+        const normalized = normalizeArchiveGame(rawGame, username, importedMatch.id);
+        if (!normalized.game) continue;
+        gamesMatched += 1;
+        playerGamesMatched += 1;
+
+        for (const profile of normalized.profiles) {
+          const row = await upsertPlayer(profile);
+          playerIdByUsername.set(profile.username.toLowerCase(), row.id);
+        }
+        matchedGames.push(normalized.game);
+      }
+
+      await markArchiveSyncFinished(username, target, { status: "success", gamesScanned: playerGamesScanned, gamesMatched: playerGamesMatched, gamesUpserted: matchedGames.length - playerStartIndex, participationsUpserted: 0, errorMessage: null });
     }
 
     for (const game of matchedGames) {
@@ -298,6 +353,7 @@ export async function syncPlayerArchives(options: SyncPlayerArchivesOptions = {}
       for (const row of rows) playerIdByUsername.set(row.username.toLowerCase(), row.id);
     }
 
+    const participationsByUsername = new Map<string, number>();
     for (const aggregate of aggregates) {
       const playerId = playerIdByUsername.get(aggregate.username.toLowerCase());
       if (!playerId) continue;
@@ -306,6 +362,11 @@ export async function syncPlayerArchives(options: SyncPlayerArchivesOptions = {}
         set: { boardNumber: null, score: aggregate.score.toFixed(2), gamesPlayed: aggregate.gamesPlayed, wins: aggregate.wins, draws: aggregate.draws, losses: aggregate.losses, timeoutLosses: aggregate.timeoutLosses, avgOpponentRating: aggregate.avgOpponentRating, lastPlayedAt: toDateOrNull(aggregate.lastPlayedAt) },
       });
       participationsUpserted += 1;
+      participationsByUsername.set(aggregate.username.toLowerCase(), (participationsByUsername.get(aggregate.username.toLowerCase()) ?? 0) + 1);
+    }
+
+    for (const [username, count] of participationsByUsername) {
+      await db.update(playerArchiveSyncState).set({ participationsUpserted: count, updatedAt: new Date() }).where(and(sql`lower(${playerArchiveSyncState.username}) = ${username}`, eq(playerArchiveSyncState.year, target.year), eq(playerArchiveSyncState.month, target.month)));
     }
 
     await db.update(syncJobs).set({ status: errors.length ? "failed" : "success", message: `Scanned ${gamesScanned} player archive games`, finishedAt: new Date(), recordsProcessed: playersProcessed, errorMessage: errors.length ? errors.join("\n").slice(0, 2000) : null, payload: { archivesFetched, gamesScanned, gamesMatched, gamesUpserted, participationsUpserted, warnings: warnings.slice(0, 50) } }).where(eq(syncJobs.id, job.id));
@@ -321,5 +382,5 @@ export async function syncPlayerArchives(options: SyncPlayerArchivesOptions = {}
     }
   }
 
-  return { playersProcessed, archivesFetched, gamesScanned, gamesMatched, gamesUpserted, participationsUpserted, warnings, errors };
+  return { mode: options.mode, year: targetMonth.year, month: targetMonth.month, skipAlreadySynced: options.skipAlreadySynced, playersSelected: playersProcessed, playersProcessed, archivesFetched, gamesScanned, gamesMatched, gamesUpserted, participationsUpserted, warnings, errors };
 }

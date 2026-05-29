@@ -24,6 +24,7 @@ export type League = {
   status: "draft" | "active" | "completed" | "archived";
   startsAt: string | null;
   endsAt: string | null;
+  matchCount?: number;
 };
 
 export type Match = {

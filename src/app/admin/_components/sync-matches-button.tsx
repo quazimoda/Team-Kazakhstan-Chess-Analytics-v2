@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type SyncSummary = {
   status: "success" | "failed";
@@ -45,6 +45,18 @@ type RecalculateSummary = {
   rowsWritten: number;
 };
 
+type DataQualitySummary = {
+  source: "database" | "demo";
+  playersTotal: number;
+  archiveSyncedPlayers: number;
+  gamesImported: number;
+  participationRows: number;
+  contributionRows: number;
+  officialMatchesWithParticipations: number;
+  unknownMatchesCount: number;
+  warnings: string[];
+};
+
 type ActionState = {
   isRunning: boolean;
   message: string | null;
@@ -66,9 +78,9 @@ function getPayloadError(payload: unknown) {
   return null;
 }
 
-async function postAdminAction<T>(endpoint: string, secret: string): Promise<T> {
+async function requestAdminAction<T>(endpoint: string, secret: string, method: "GET" | "POST"): Promise<T> {
   const response = await fetch(endpoint, {
-    method: "POST",
+    method,
     headers: { "x-admin-secret": secret },
   });
 
@@ -102,24 +114,70 @@ async function postAdminAction<T>(endpoint: string, secret: string): Promise<T> 
   return payload as T;
 }
 
+async function postAdminAction<T>(endpoint: string, secret: string): Promise<T> {
+  return requestAdminAction<T>(endpoint, secret, "POST");
+}
+
+async function getAdminAction<T>(endpoint: string, secret: string): Promise<T> {
+  return requestAdminAction<T>(endpoint, secret, "GET");
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat().format(value);
+}
+
+function DataQualityCards({ data }: { data: DataQualitySummary | null }) {
+  const cards = [
+    ["Players total", data?.playersTotal],
+    ["Archive synced players", data?.archiveSyncedPlayers],
+    ["Games imported", data?.gamesImported],
+    ["Participation rows", data?.participationRows],
+    ["Contribution rows", data?.contributionRows],
+    ["Official matches with participations", data?.officialMatchesWithParticipations],
+    ["Unknown matches", data?.unknownMatchesCount],
+  ] as const;
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {cards.map(([label, value]) => (
+        <div key={label} className="rounded-2xl border border-white/10 bg-white/5 p-3">
+          <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
+          <p className="mt-1 text-2xl font-semibold text-white">{value == null ? "—" : formatNumber(value)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function SyncMatchesButton() {
   const [sync, setSync] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [details, setDetails] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [players, setPlayers] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [archives, setArchives] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [recalculate, setRecalculate] = useState<ActionState>({ isRunning: false, message: null, error: null });
-  const isBusy = sync.isRunning || details.isRunning || players.isRunning || archives.isRunning || recalculate.isRunning;
+  const [dataQuality, setDataQuality] = useState<DataQualitySummary | null>(null);
+  const [quality, setQuality] = useState<ActionState>({ isRunning: false, message: null, error: null });
+  const isBusy = sync.isRunning || details.isRunning || players.isRunning || archives.isRunning || recalculate.isRunning || quality.isRunning;
+
+  useEffect(() => {
+    const savedSecret = window.sessionStorage.getItem("adminSecret");
+    if (!savedSecret) return;
+    getAdminAction<DataQualitySummary>("/api/admin/data-quality", savedSecret)
+      .then(setDataQuality)
+      .catch(() => undefined);
+  }, []);
 
   async function runAction<T>(endpoint: string, onSuccess: (payload: T) => string, setState: (state: ActionState) => void) {
     setState({ isRunning: true, message: null, error: null });
 
-    const secret = window.prompt("ADMIN_SECRET");
+    const secret = window.prompt("ADMIN_SECRET", window.sessionStorage.getItem("adminSecret") ?? "");
     if (secret == null) {
       setState({ isRunning: false, message: null, error: null });
       return;
     }
 
     try {
+      window.sessionStorage.setItem("adminSecret", secret);
       const payload = await postAdminAction<T>(endpoint, secret);
       setState({ isRunning: false, message: onSuccess(payload), error: null });
     } catch (actionError) {
@@ -127,8 +185,27 @@ export function SyncMatchesButton() {
     }
   }
 
+  async function refreshDataQuality() {
+    setQuality({ isRunning: true, message: null, error: null });
+    const secret = window.prompt("ADMIN_SECRET", window.sessionStorage.getItem("adminSecret") ?? "");
+    if (secret == null) {
+      setQuality({ isRunning: false, message: null, error: null });
+      return;
+    }
+    try {
+      window.sessionStorage.setItem("adminSecret", secret);
+      const payload = await getAdminAction<DataQualitySummary>("/api/admin/data-quality", secret);
+      setDataQuality(payload);
+      setQuality({ isRunning: false, message: `Data quality refreshed from ${payload.source}.`, error: null });
+    } catch (actionError) {
+      setQuality({ isRunning: false, message: null, error: actionError instanceof Error ? actionError.message : "Data quality refresh failed" });
+    }
+  }
+
   return (
     <div className="space-y-3">
+      <DataQualityCards data={dataQuality} />
+      {dataQuality?.warnings.length ? <p className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4 text-sm text-yellow-100">{dataQuality.warnings.slice(0, 4).join(" ")}</p> : null}
       <button
         onClick={() => runAction<SyncSummary>("/api/admin/sync/matches", (summary) => `Sync ${summary.status}: ${summary.recordsProcessed} matches processed. Registered: ${summary.buckets.registered ?? 0}, active: ${summary.buckets.in_progress ?? 0}, finished: ${summary.buckets.finished ?? 0}.`, setSync)}
         disabled={isBusy}
@@ -158,14 +235,36 @@ export function SyncMatchesButton() {
         {players.isRunning ? "Syncing players…" : "Sync Players"}
       </button>
       <button
-        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?limitPlayers=10", (summary) => {
+        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=next&limitPlayers=10", (summary) => {
           const problems = [...summary.warnings, ...summary.errors];
           return `Player archives: ${summary.playersProcessed} players processed, ${summary.gamesScanned} games scanned, ${summary.gamesMatched} games matched, ${summary.gamesUpserted} games upserted, ${summary.participationsUpserted} participations upserted.${problems.length ? ` Warnings/errors: ${problems.slice(0, 5).join("; ")}` : ""}`;
         }, setArchives)}
         disabled={isBusy}
         className="w-full rounded-2xl bg-violet-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {archives.isRunning ? "Syncing archives…" : "Sync Player Archives"}
+        {archives.isRunning ? "Syncing archives…" : "Sync next 10 players"}
+      </button>
+
+      <button
+        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=next&limitPlayers=25", (summary) => `Player archives: ${summary.playersProcessed} players processed, ${summary.gamesScanned} games scanned, ${summary.gamesMatched} games matched, ${summary.gamesUpserted} games upserted.`, setArchives)}
+        disabled={isBusy}
+        className="w-full rounded-2xl bg-purple-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-purple-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {archives.isRunning ? "Syncing archives…" : "Sync next 25 players"}
+      </button>
+      <button
+        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=retry-failed&limitPlayers=25", (summary) => `Retry failed archives: ${summary.playersProcessed} players processed, ${summary.errors.length} errors.`, setArchives)}
+        disabled={isBusy}
+        className="w-full rounded-2xl border border-violet-300/30 px-4 py-3 font-semibold text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {archives.isRunning ? "Retrying…" : "Retry failed"}
+      </button>
+      <button
+        onClick={refreshDataQuality}
+        disabled={isBusy}
+        className="w-full rounded-2xl border border-cyan-300/30 px-4 py-3 font-semibold text-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {quality.isRunning ? "Refreshing…" : "Refresh data quality"}
       </button>
       <button
         onClick={() => runAction<RecalculateSummary>("/api/admin/recalculate", (summary) => `Recalculated ${summary.rowsWritten} contribution rows from ${summary.source} data for period ${summary.period}.`, setRecalculate)}
@@ -178,11 +277,13 @@ export function SyncMatchesButton() {
       {details.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{details.message}</p> : null}
       {players.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{players.message}</p> : null}
       {archives.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{archives.message}</p> : null}
+      {quality.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{quality.message}</p> : null}
       {recalculate.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{recalculate.message}</p> : null}
       {sync.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{sync.error}</p> : null}
       {details.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{details.error}</p> : null}
       {players.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{players.error}</p> : null}
       {archives.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{archives.error}</p> : null}
+      {quality.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{quality.error}</p> : null}
       {recalculate.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{recalculate.error}</p> : null}
     </div>
   );
