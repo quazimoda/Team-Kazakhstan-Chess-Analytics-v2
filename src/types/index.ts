@@ -117,4 +117,8 @@ export type TeamSummary = {
 export type ApiResponse<T> = {
   data: T;
   source: "database" | "demo";
+  readError?: {
+    code?: string;
+    message: string;
+  };
 };
