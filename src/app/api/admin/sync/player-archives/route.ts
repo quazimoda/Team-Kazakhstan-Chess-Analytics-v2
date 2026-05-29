@@ -15,7 +15,18 @@ function parseInteger(value: string | null) {
 function parseLimitPlayers(value: string | null) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed)) return 10;
-  return Math.min(Math.max(parsed, 1), 50);
+  return Math.min(Math.max(parsed, 1), 25);
+}
+
+function parseMode(value: string | null) {
+  if (value === "retry-failed" || value === "specific") return value;
+  return "next";
+}
+
+function parseBoolean(value: string | null, fallback: boolean) {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
 }
 
 export async function POST(request: NextRequest) {
@@ -24,10 +35,13 @@ export async function POST(request: NextRequest) {
     if (env.ADMIN_SECRET && secret !== env.ADMIN_SECRET) return NextResponse.json({ error: "Invalid ADMIN_SECRET" }, { status: 401 });
     if (!env.DATABASE_URL) return NextResponse.json({ error: "DATABASE_URL is not configured; player archive sync requires PostgreSQL" }, { status: 500 });
 
-    const usernames = request.nextUrl.searchParams.get("usernames")?.split(",").map((username) => username.trim()).filter(Boolean);
+    const usernameParam = request.nextUrl.searchParams.get("username");
+    const usernames = (request.nextUrl.searchParams.get("usernames") ?? usernameParam)?.split(",").map((username) => username.trim()).filter(Boolean);
     const summary = await syncPlayerArchives({
       usernames: usernames?.length ? usernames : undefined,
       limitPlayers: parseLimitPlayers(request.nextUrl.searchParams.get("limitPlayers")),
+      mode: parseMode(request.nextUrl.searchParams.get("mode")),
+      skipAlreadySynced: parseBoolean(request.nextUrl.searchParams.get("skipAlreadySynced"), true),
       year: parseInteger(request.nextUrl.searchParams.get("year")),
       month: parseInteger(request.nextUrl.searchParams.get("month")),
       matchId: parseInteger(request.nextUrl.searchParams.get("matchId")),

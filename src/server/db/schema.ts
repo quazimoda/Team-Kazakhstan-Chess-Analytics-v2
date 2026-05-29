@@ -20,6 +20,7 @@ export const leagueStatusEnum = pgEnum("league_status", ["draft", "active", "com
 export const syncJobTypeEnum = pgEnum("sync_job_type", ["matches", "players", "games", "leaderboards"]);
 export const syncJobStatusEnum = pgEnum("sync_job_status", ["queued", "running", "success", "failed"]);
 export const gameResultEnum = pgEnum("game_result", ["win", "draw", "loss", "unknown"]);
+export const archiveSyncStatusEnum = pgEnum("archive_sync_status", ["running", "success", "failed", "skipped"]);
 
 export const players = pgTable(
   "players",
@@ -148,6 +149,30 @@ export const playerContributions = pgTable(
     calculatedAt: timestamp("calculated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({ playerPeriodIdx: uniqueIndex("player_contributions_player_period_idx").on(table.playerId, table.leagueId, table.period) }),
+);
+
+export const playerArchiveSyncState = pgTable(
+  "player_archive_sync_state",
+  {
+    id: serial("id").primaryKey(),
+    username: varchar("username", { length: 80 }).notNull(),
+    year: integer("year").notNull(),
+    month: integer("month").notNull(),
+    status: archiveSyncStatusEnum("status").notNull().default("running"),
+    gamesScanned: integer("games_scanned").notNull().default(0),
+    gamesMatched: integer("games_matched").notNull().default(0),
+    gamesUpserted: integer("games_upserted").notNull().default(0),
+    participationsUpserted: integer("participations_upserted").notNull().default(0),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    usernameMonthIdx: uniqueIndex("player_archive_sync_state_username_month_idx").on(table.username, table.year, table.month),
+    statusIdx: index("player_archive_sync_state_status_idx").on(table.status),
+  }),
 );
 
 export const syncJobs = pgTable(

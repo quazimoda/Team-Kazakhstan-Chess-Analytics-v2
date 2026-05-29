@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { MatchesTable } from "@/components/tables";
 import { Card, PageHeader } from "@/components/ui";
-import { baseLeagues } from "@/server/db/seedLeagues";
-import { getMatches } from "@/server/queries";
+import { getLeagues, getMatches } from "@/server/queries";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -23,7 +22,7 @@ export default async function MatchesPage({ searchParams }: { searchParams: Prom
   const params = await searchParams;
   const official = params.official === "official" ? "official" : "all";
   const league = params.league ?? "all";
-  const matches = await getMatches({ official, league });
+  const [matches, leagues] = await Promise.all([getMatches({ official, league }), getLeagues()]);
 
   return (
     <>
@@ -40,8 +39,8 @@ export default async function MatchesPage({ searchParams }: { searchParams: Prom
           <p className="mb-2 text-sm font-medium text-slate-300">League</p>
           <div className="flex flex-wrap gap-2">
             <FilterLink href={filterHref(official, "all")} active={league === "all"}>All leagues</FilterLink>
-            {baseLeagues.map((item) => (
-              <FilterLink key={item.slug} href={filterHref(official, item.slug)} active={league === item.slug}>{item.name}</FilterLink>
+            {leagues.data.map((item) => (
+              <FilterLink key={item.slug} href={filterHref(official, item.slug)} active={league === item.slug}>{`${item.name}${item.matchCount === 0 ? " (no data yet)" : item.matchCount == null ? "" : ` (${item.matchCount})`}`}</FilterLink>
             ))}
           </div>
         </div>

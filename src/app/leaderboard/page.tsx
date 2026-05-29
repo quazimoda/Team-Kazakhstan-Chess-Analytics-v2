@@ -53,7 +53,7 @@ export default async function LeaderboardPage({ searchParams }: LeaderboardPageP
             <span className="mb-2 block font-medium text-white">League</span>
             <select name="league" defaultValue={league} className="w-full rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 text-white outline-none focus:border-cyan-300">
               <option value="all">All official leagues</option>
-              {leagues.data.map((item) => <option key={item.slug} value={item.slug}>{item.name}</option>)}
+              {leagues.data.map((item) => <option key={item.slug} value={item.slug}>{item.name}{item.matchCount === 0 ? " (no data yet)" : item.matchCount == null ? "" : ` (${item.matchCount})`}</option>)}
             </select>
           </label>
           <label className="text-sm text-slate-300">

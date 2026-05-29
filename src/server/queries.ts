@@ -1,4 +1,4 @@
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
 import { games, leagues, matches, matchParticipations, playerContributions, players, syncJobs } from "@/server/db/schema";
@@ -152,11 +152,11 @@ export async function getLeagues(): Promise<ApiResponse<League[]>> {
   if (!db) return { data: demoLeagues, source: "demo" };
 
   try {
-    const rows = await db.select().from(leagues).limit(100);
+    const rows = await db.select({ league: leagues, matchCount: count(matches.id) }).from(leagues).leftJoin(matches, eq(matches.leagueId, leagues.id)).groupBy(leagues.id).limit(100);
     if (rows.length === 0) return { data: demoLeagues, source: "demo" };
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.id), name: row.name, slug: row.slug, season: row.season, status: row.status, startsAt: toIso(row.startsAt), endsAt: toIso(row.endsAt) })),
+      data: rows.map((row: any) => ({ id: String(row.league.id), name: row.league.name, slug: row.league.slug, season: row.league.season, status: row.league.status, startsAt: toIso(row.league.startsAt), endsAt: toIso(row.league.endsAt), matchCount: Number(row.matchCount) })),
     };
   } catch (error) {
     logReadFallback("getLeagues", error);
