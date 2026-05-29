@@ -45,6 +45,12 @@ type RecalculateSummary = {
   rowsWritten: number;
 };
 
+type ReclassifySummary = {
+  processed: number;
+  updated: number;
+  countsByLeague: Record<string, number>;
+};
+
 type DataQualitySummary = {
   source: "database" | "demo";
   playersTotal: number;
@@ -155,9 +161,10 @@ export function SyncMatchesButton() {
   const [players, setPlayers] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [archives, setArchives] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [recalculate, setRecalculate] = useState<ActionState>({ isRunning: false, message: null, error: null });
+  const [reclassify, setReclassify] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [dataQuality, setDataQuality] = useState<DataQualitySummary | null>(null);
   const [quality, setQuality] = useState<ActionState>({ isRunning: false, message: null, error: null });
-  const isBusy = sync.isRunning || details.isRunning || players.isRunning || archives.isRunning || recalculate.isRunning || quality.isRunning;
+  const isBusy = sync.isRunning || details.isRunning || players.isRunning || archives.isRunning || recalculate.isRunning || reclassify.isRunning || quality.isRunning;
 
   useEffect(() => {
     const savedSecret = window.sessionStorage.getItem("adminSecret");
@@ -266,6 +273,17 @@ export function SyncMatchesButton() {
       >
         {quality.isRunning ? "Refreshing…" : "Refresh data quality"}
       </button>
+
+      <button
+        onClick={() => runAction<ReclassifySummary>("/api/admin/reclassify-matches", (summary) => {
+          const counts = Object.entries(summary.countsByLeague).sort(([left], [right]) => left.localeCompare(right)).map(([league, count]) => `${league}: ${count}`).join(", ");
+          return `Reclassified ${summary.processed} matches; updated ${summary.updated}.${counts ? ` Counts: ${counts}.` : ""}`;
+        }, setReclassify)}
+        disabled={isBusy}
+        className="w-full rounded-2xl border border-orange-300/30 px-4 py-3 font-semibold text-orange-100 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {reclassify.isRunning ? "Reclassifying…" : "Reclassify Matches"}
+      </button>
       <button
         onClick={() => runAction<RecalculateSummary>("/api/admin/recalculate", (summary) => `Recalculated ${summary.rowsWritten} contribution rows from ${summary.source} data for period ${summary.period}.`, setRecalculate)}
         disabled={isBusy}
@@ -278,12 +296,14 @@ export function SyncMatchesButton() {
       {players.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{players.message}</p> : null}
       {archives.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{archives.message}</p> : null}
       {quality.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{quality.message}</p> : null}
+      {reclassify.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{reclassify.message}</p> : null}
       {recalculate.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{recalculate.message}</p> : null}
       {sync.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{sync.error}</p> : null}
       {details.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{details.error}</p> : null}
       {players.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{players.error}</p> : null}
       {archives.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{archives.error}</p> : null}
       {quality.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{quality.error}</p> : null}
+      {reclassify.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{reclassify.error}</p> : null}
       {recalculate.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{recalculate.error}</p> : null}
     </div>
   );

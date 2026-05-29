@@ -12,6 +12,7 @@ export const baseLeagues: Array<{ name: string; slug: LeagueSlug; status: "activ
   { name: "Live Chess World League", slug: "lcwl", status: "active" },
   { name: "Live Chess Asian League", slug: "lcal", status: "active" },
   { name: "Live Chess European League", slug: "lcel", status: "active" },
+  { name: "Friendly / Non-league", slug: "friendly", status: "active" },
   { name: "Unknown", slug: "unknown", status: "active" },
 ];
 
