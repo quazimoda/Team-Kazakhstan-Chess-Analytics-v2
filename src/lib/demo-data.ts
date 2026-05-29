@@ -3,9 +3,9 @@ import type { LeaderboardRow, League, Match, Player, SyncJob, TeamSummary } from
 const now = new Date("2026-05-29T07:00:00.000Z").toISOString();
 
 export const demoPlayers: Player[] = [
-  { id: "1", username: "kazakh_knight", name: "Aruzhan S.", title: "WFM", country: "Kazakhstan", avatarUrl: null, chesscomUrl: "https://www.chess.com/member/kazakh_knight", currentRating: 2180, gamesPlayed: 42, wins: 24, draws: 10, losses: 8, contributionScore: 87.5, lastSeenAt: now },
-  { id: "2", username: "steppe_rook", name: "Daniyar K.", title: "FM", country: "Kazakhstan", avatarUrl: null, chesscomUrl: "https://www.chess.com/member/steppe_rook", currentRating: 2312, gamesPlayed: 37, wins: 22, draws: 7, losses: 8, contributionScore: 82, lastSeenAt: now },
-  { id: "3", username: "almaty_bishop", name: "Miras T.", title: null, country: "Kazakhstan", avatarUrl: null, chesscomUrl: "https://www.chess.com/member/almaty_bishop", currentRating: 2054, gamesPlayed: 31, wins: 16, draws: 9, losses: 6, contributionScore: 71.25, lastSeenAt: now },
+  { id: "1", username: "kazakh_knight", name: "Aruzhan S.", title: "WFM", country: "Kazakhstan", avatarUrl: null, chesscomUrl: "https://www.chess.com/member/kazakh_knight", currentRating: 2180, matchesPlayed: 21, gamesPlayed: 42, wins: 24, draws: 10, losses: 8, contributionScore: 87.5, lastSeenAt: now },
+  { id: "2", username: "steppe_rook", name: "Daniyar K.", title: "FM", country: "Kazakhstan", avatarUrl: null, chesscomUrl: "https://www.chess.com/member/steppe_rook", currentRating: 2312, matchesPlayed: 19, gamesPlayed: 37, wins: 22, draws: 7, losses: 8, contributionScore: 82, lastSeenAt: now },
+  { id: "3", username: "almaty_bishop", name: "Miras T.", title: null, country: "Kazakhstan", avatarUrl: null, chesscomUrl: "https://www.chess.com/member/almaty_bishop", currentRating: 2054, matchesPlayed: 16, gamesPlayed: 31, wins: 16, draws: 9, losses: 6, contributionScore: 71.25, lastSeenAt: now },
 ];
 
 export const demoLeagues: League[] = [
@@ -25,7 +25,21 @@ export const demoSyncJobs: SyncJob[] = [
 ];
 
 export const demoLeaderboard: LeaderboardRow[] = demoPlayers
-  .map((player, index) => ({ rank: index + 1, username: player.username, title: player.title, gamesPlayed: player.gamesPlayed, wins: player.wins, draws: player.draws, losses: player.losses, score: player.wins + player.draws * 0.5, contributionScore: player.contributionScore }))
+  .map((player, index) => ({
+    rank: index + 1,
+    username: player.username,
+    title: player.title,
+    matches: player.matchesPlayed,
+    games: player.gamesPlayed,
+    wins: player.wins,
+    draws: player.draws,
+    losses: player.losses,
+    points: player.wins + player.draws * 0.5,
+    winRate: player.gamesPlayed > 0 ? (player.wins / player.gamesPlayed) * 100 : 0,
+    contributionScore: player.contributionScore,
+    avgOpponentRating: player.currentRating ? player.currentRating - 35 : null,
+    lastPlayedAt: player.lastSeenAt,
+  }))
   .sort((a, b) => b.contributionScore - a.contributionScore)
   .map((row, index) => ({ ...row, rank: index + 1 }));
 

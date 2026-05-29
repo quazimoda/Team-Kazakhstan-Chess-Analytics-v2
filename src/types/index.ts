@@ -7,6 +7,7 @@ export type Player = {
   avatarUrl: string | null;
   chesscomUrl: string | null;
   currentRating: number | null;
+  matchesPlayed: number;
   gamesPlayed: number;
   wins: number;
   draws: number;
@@ -47,12 +48,16 @@ export type LeaderboardRow = {
   rank: number;
   username: string;
   title: string | null;
-  gamesPlayed: number;
+  matches: number;
+  games: number;
   wins: number;
   draws: number;
   losses: number;
-  score: number;
+  points: number;
+  winRate: number;
   contributionScore: number;
+  avgOpponentRating: number | null;
+  lastPlayedAt: string | null;
 };
 
 export type SyncJob = {

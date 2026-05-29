@@ -1,6 +1,6 @@
 import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { db } from "@/server/db";
-import { leagues, matches, players, syncJobs } from "@/server/db/schema";
+import { leagues, matches, playerContributions, players, syncJobs } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { demoLeaderboard, demoLeagues, demoMatches, demoPlayers, demoSummary, demoSyncJobs } from "@/lib/demo-data";
 import type { ApiResponse, LeaderboardRow, League, Match, Player, SyncJob, TeamSummary } from "@/types";
@@ -19,7 +19,7 @@ export async function getPlayers(): Promise<ApiResponse<Player[]>> {
   if (rows.length === 0) return { data: demoPlayers, source: "demo" };
   return {
     source: "database",
-    data: rows.map((row: any) => ({ id: String(row.id), username: row.username, name: row.name, title: row.title, country: row.country, avatarUrl: row.avatarUrl, chesscomUrl: row.chesscomUrl, currentRating: row.currentRating, gamesPlayed: row.gamesPlayed, wins: row.wins, draws: row.draws, losses: row.losses, contributionScore: Number(row.contributionScore), lastSeenAt: toIso(row.lastSeenAt) })),
+    data: rows.map((row: any) => ({ id: String(row.id), username: row.username, name: row.name, title: row.title, country: row.country, avatarUrl: row.avatarUrl, chesscomUrl: row.chesscomUrl, currentRating: row.currentRating, matchesPlayed: row.matchesPlayed, gamesPlayed: row.gamesPlayed, wins: row.wins, draws: row.draws, losses: row.losses, contributionScore: Number(row.contributionScore), lastSeenAt: toIso(row.lastSeenAt) })),
   };
 }
 
@@ -40,7 +40,7 @@ export async function getMatches(filters: MatchFilters = {}): Promise<ApiRespons
 
   const conditions: SQL[] = [];
   if (selectedLeague) conditions.push(eq(leagues.slug, selectedLeague));
-  if (isOfficialOnly) conditions.push(sql`${leagues.slug} is not null and ${leagues.slug} <> 'unknown'`);
+  if (isOfficialOnly) conditions.push(eq(matches.isOfficial, 1));
 
   const rows = await db
     .select({ match: matches, league: leagues })
@@ -52,7 +52,7 @@ export async function getMatches(filters: MatchFilters = {}): Promise<ApiRespons
   if (rows.length === 0) return { data: applyFilters(demoMatches), source: "demo" };
   return {
     source: "database",
-    data: rows.map((row: any) => ({ id: String(row.match.id), chesscomMatchId: row.match.chesscomMatchId, leagueId: row.match.leagueId ? String(row.match.leagueId) : null, name: row.match.name, opponent: row.match.opponent, status: row.match.status, result: row.match.result, teamScore: toNumber(row.match.teamScore), opponentScore: toNumber(row.match.opponentScore), boardCount: row.match.boardCount, startsAt: toIso(row.match.startsAt), endsAt: toIso(row.match.endsAt), leagueSlug: row.league?.slug ?? classifyLeague(row.match.name).leagueSlug, leagueName: row.league?.name ?? null, isOfficialCandidate: row.league?.slug ? row.league.slug !== "unknown" : classifyLeague(row.match.name).isOfficialCandidate })),
+    data: rows.map((row: any) => ({ id: String(row.match.id), chesscomMatchId: row.match.chesscomMatchId, leagueId: row.match.leagueId ? String(row.match.leagueId) : null, name: row.match.name, opponent: row.match.opponent, status: row.match.status, result: row.match.result, teamScore: toNumber(row.match.teamScore), opponentScore: toNumber(row.match.opponentScore), boardCount: row.match.boardCount, startsAt: toIso(row.match.startsAt), endsAt: toIso(row.match.endsAt), leagueSlug: row.league?.slug ?? classifyLeague(row.match.name).leagueSlug, leagueName: row.league?.name ?? null, isOfficialCandidate: Boolean(row.match.isOfficial) })),
   };
 }
 
@@ -76,14 +76,81 @@ export async function getSyncJobs(): Promise<ApiResponse<SyncJob[]>> {
   };
 }
 
-export async function getLeaderboard(): Promise<ApiResponse<LeaderboardRow[]>> {
-  const playersResult = await getPlayers();
-  if (playersResult.source === "demo") return { data: demoLeaderboard, source: "demo" };
-  const data = playersResult.data
-    .map((player, index) => ({ rank: index + 1, username: player.username, title: player.title, gamesPlayed: player.gamesPlayed, wins: player.wins, draws: player.draws, losses: player.losses, score: player.wins + player.draws * 0.5, contributionScore: player.contributionScore }))
-    .sort((a, b) => b.contributionScore - a.contributionScore)
+export type LeaderboardSort = "contribution_score" | "points" | "win_rate" | "games";
+export type LeaderboardFilters = { league?: string; period?: string; minGames?: number; sort?: LeaderboardSort };
+
+const leaderboardSorters: Record<LeaderboardSort, (row: LeaderboardRow) => number> = {
+  contribution_score: (row) => row.contributionScore,
+  points: (row) => row.points,
+  win_rate: (row) => row.winRate,
+  games: (row) => row.games,
+};
+
+function normalizeLeaderboardSort(sort: string | undefined): LeaderboardSort {
+  if (sort === "points" || sort === "win_rate" || sort === "games") return sort;
+  return "contribution_score";
+}
+
+function rankLeaderboard(rows: LeaderboardRow[], sort: LeaderboardSort, minGames: number) {
+  return rows
+    .filter((row) => row.games >= minGames)
+    .sort((a, b) => leaderboardSorters[sort](b) - leaderboardSorters[sort](a) || b.contributionScore - a.contributionScore || a.username.localeCompare(b.username))
     .map((row, index) => ({ ...row, rank: index + 1 }));
-  return { data, source: "database" };
+}
+
+export async function getLeaderboard(filters: LeaderboardFilters = {}): Promise<ApiResponse<LeaderboardRow[]>> {
+  const period = filters.period ?? "all";
+  const selectedLeague = filters.league && filters.league !== "all" ? filters.league : null;
+  const minGames = Math.max(0, filters.minGames ?? 0);
+  const sort = normalizeLeaderboardSort(filters.sort);
+
+  if (!db) return { data: rankLeaderboard(demoLeaderboard, sort, minGames), source: "demo" };
+
+  const conditions: SQL[] = [eq(playerContributions.period, period)];
+  if (selectedLeague) conditions.push(eq(leagues.slug, selectedLeague));
+
+  const rows = await db
+    .select({
+      username: players.username,
+      title: players.title,
+      matches: sql<number>`coalesce(sum(${playerContributions.matchesPlayed}), 0)`,
+      games: sql<number>`coalesce(sum(${playerContributions.gamesPlayed}), 0)`,
+      wins: sql<number>`coalesce(sum(${playerContributions.wins}), 0)`,
+      draws: sql<number>`coalesce(sum(${playerContributions.draws}), 0)`,
+      losses: sql<number>`coalesce(sum(${playerContributions.losses}), 0)`,
+      points: sql<number>`coalesce(sum(${playerContributions.points}), 0)`,
+      contributionScore: sql<number>`coalesce(sum(${playerContributions.contributionScore}), 0)`,
+      avgOpponentRating: sql<number | null>`round(sum(${playerContributions.avgOpponentRating} * ${playerContributions.gamesPlayed}) / nullif(sum(${playerContributions.gamesPlayed}), 0))`,
+      lastPlayedAt: sql<Date | null>`max(${playerContributions.lastPlayedAt})`,
+    })
+    .from(playerContributions)
+    .innerJoin(players, eq(playerContributions.playerId, players.id))
+    .leftJoin(leagues, eq(playerContributions.leagueId, leagues.id))
+    .where(and(...conditions))
+    .groupBy(players.id, players.username, players.title)
+    .limit(200);
+
+  const data: LeaderboardRow[] = rows.map((row: any) => {
+    const games = Number(row.games);
+    const wins = Number(row.wins);
+    return {
+      rank: 0,
+      username: row.username,
+      title: row.title,
+      matches: Number(row.matches),
+      games,
+      wins,
+      draws: Number(row.draws),
+      losses: Number(row.losses),
+      points: Number(row.points),
+      winRate: games > 0 ? (wins / games) * 100 : 0,
+      contributionScore: Number(row.contributionScore),
+      avgOpponentRating: row.avgOpponentRating == null ? null : Number(row.avgOpponentRating),
+      lastPlayedAt: toIso(row.lastPlayedAt),
+    };
+  });
+
+  return { data: rankLeaderboard(data, sort, minGames), source: "database" };
 }
 
 export async function getTeamSummary(): Promise<ApiResponse<TeamSummary>> {
