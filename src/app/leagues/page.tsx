@@ -10,6 +10,16 @@ export default async function LeaguesPage() {
   return (
     <>
       <PageHeader eyebrow={leagues.source} title="Leagues" description="League and season containers that group matches and contribution calculations." />
+      {leagues.source === "demo" ? (
+        <div className="mb-6 rounded-2xl border border-yellow-300/30 bg-yellow-300/10 p-4 text-sm font-medium text-yellow-100">
+          Demo fallback is being shown. Database read failed or DATABASE_URL is not configured.
+        </div>
+      ) : null}
+      {leagues.readError ? (
+        <div className="mb-6 rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-sm font-medium text-red-100">
+          Database read failed. Check Vercel runtime logs.
+        </div>
+      ) : null}
       <div className="grid gap-4 md:grid-cols-2">
         {leagues.data.map((league) => (
           <Card key={league.id}>

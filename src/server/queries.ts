@@ -13,21 +13,39 @@ function toNumber(value: string | number | null | undefined) {
   return value == null ? null : Number(value);
 }
 
-function describeReadError(error: unknown) {
+function sanitizeReadErrorValue(value: unknown) {
+  return String(value)
+    .replace(/postgres(?:ql)?:\/\/[^\s"']+/gi, "postgres://[redacted]")
+    .replace(/password=([^\s&]+)/gi, "password=[redacted]")
+    .slice(0, 500);
+}
+
+export function describeReadError(error: unknown) {
   if (error && typeof error === "object") {
     const maybeDbError = error as { code?: unknown; message?: unknown; cause?: unknown };
     const cause = maybeDbError.cause && typeof maybeDbError.cause === "object" ? maybeDbError.cause as { code?: unknown; message?: unknown } : null;
+    const code = typeof maybeDbError.code === "string" ? maybeDbError.code : typeof cause?.code === "string" ? cause.code : undefined;
+    const message = typeof maybeDbError.message === "string" ? maybeDbError.message : typeof cause?.message === "string" ? cause.message : String(error);
+
     return {
-      code: typeof maybeDbError.code === "string" ? maybeDbError.code : typeof cause?.code === "string" ? cause.code : undefined,
-      message: typeof maybeDbError.message === "string" ? maybeDbError.message : typeof cause?.message === "string" ? cause.message : String(error),
+      code: code?.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80),
+      message: sanitizeReadErrorValue(message),
     };
   }
 
-  return { message: String(error) };
+  return { message: sanitizeReadErrorValue(error) };
 }
 
 function logReadFallback(queryName: string, error: unknown) {
   console.error(`[server/queries] ${queryName} read failed; returning demo fallback data.`, describeReadError(error));
+}
+
+function logReadError(queryName: string, error: unknown) {
+  console.error(`[server/queries] ${queryName} read failed.`, { queryName, ...describeReadError(error) });
+}
+
+function isExplicitDemoMode() {
+  return process.env.DEMO_MODE === "true" || process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 }
 
 export async function getPlayers(): Promise<ApiResponse<Player[]>> {
@@ -149,7 +167,7 @@ export async function getMatchGames(matchId: number): Promise<ApiResponse<MatchG
 }
 
 export async function getLeagues(): Promise<ApiResponse<League[]>> {
-  if (!db) return { data: demoLeagues, source: "demo" };
+  if (!db || isExplicitDemoMode()) return { data: demoLeagues, source: "demo" };
 
   try {
     const rows = await db
@@ -163,14 +181,14 @@ export async function getLeagues(): Promise<ApiResponse<League[]>> {
       })
       .from(leagues)
       .limit(100);
-    if (rows.length === 0) return { data: demoLeagues, source: "demo" };
     return {
       source: "database",
       data: rows.map((row: any) => ({ id: String(row.league.id), name: row.league.name, slug: row.league.slug, season: row.league.season, status: row.league.status, startsAt: toIso(row.league.startsAt), endsAt: toIso(row.league.endsAt), matchCount: Number(row.matchCount), officialMatchCount: Number(row.officialMatchCount), gameCount: Number(row.gameCount), participationCount: Number(row.participationCount), contributionCount: Number(row.contributionCount) })),
     };
   } catch (error) {
-    logReadFallback("getLeagues", error);
-    return { data: demoLeagues, source: "demo" };
+    const readError = describeReadError(error);
+    logReadError("getLeagues", error);
+    return { data: [], source: "database", readError };
   }
 }
 
