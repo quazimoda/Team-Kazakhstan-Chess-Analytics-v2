@@ -188,6 +188,7 @@ export async function syncClubMatches(): Promise<SyncClubMatchesSummary> {
         endsAt: match.endsAt,
         chesscomUrl: match.chesscomUrl,
         rawMatch: match.rawMatch,
+        isOfficial: match.leagueSlug !== "unknown" ? 1 : 0,
         updatedAt: now,
       };
 
