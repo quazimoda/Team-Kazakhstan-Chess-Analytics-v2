@@ -26,7 +26,7 @@ export async function recalculatePlayerContributions(options: RecalculatePlayerC
   const leagueId = options.leagueId ?? null;
   const shouldRecalculateEveryLeague = options.leagueId === undefined;
 
-  if (!db) return { source: "demo", period, leagueId, rowsWritten: 0 };
+  if (!db) throw new Error("DATABASE_URL is not configured; contribution recalculation requires PostgreSQL");
 
   const conditions = [eq(matches.isOfficial, 1)];
   if (!shouldRecalculateEveryLeague && leagueId != null) conditions.push(eq(matches.leagueId, leagueId));
