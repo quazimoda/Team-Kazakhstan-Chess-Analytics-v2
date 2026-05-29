@@ -4,6 +4,7 @@ declare namespace React {
 
 declare module "react" {
   export type ReactNode = unknown;
+  export function useState<T>(initialValue: T | (() => T)): [T, (value: T | ((previous: T) => T)) => void];
 }
 
 declare namespace JSX {
@@ -54,8 +55,12 @@ declare module "postgres" {
 }
 
 declare module "drizzle-orm" {
+  export type SQL = unknown;
   export const sql: any;
+  export function and(...conditions: unknown[]): unknown;
   export function desc(value: unknown): unknown;
+  export function eq(left: unknown, right: unknown): unknown;
+  export function inArray(column: unknown, values: unknown[]): unknown;
   export function relations(table: unknown, builder: (helpers: { one: any; many: any }) => unknown): unknown;
 }
 
@@ -105,4 +110,10 @@ declare module "zod" {
     record<T>(key: Schema<string>, value: Schema<T>): Schema<Record<string, T>>;
     object<T extends Record<string, Schema>>(shape: T): Schema<any>;
   };
+}
+
+declare module "vitest" {
+  export const describe: any;
+  export const expect: any;
+  export const it: any;
 }

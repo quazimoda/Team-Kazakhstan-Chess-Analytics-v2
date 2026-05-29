@@ -38,6 +38,9 @@ export type Match = {
   boardCount: number | null;
   startsAt: string | null;
   endsAt: string | null;
+  leagueSlug?: string | null;
+  leagueName?: string | null;
+  isOfficialCandidate?: boolean;
 };
 
 export type LeaderboardRow = {
@@ -57,6 +60,8 @@ export type SyncJob = {
   type: "matches" | "players" | "games" | "leaderboards";
   status: "queued" | "running" | "success" | "failed";
   message: string | null;
+  recordsProcessed?: number;
+  errorMessage?: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
