@@ -9,49 +9,70 @@ type SyncSummary = {
   buckets: Record<string, number>;
 };
 
-export function SyncMatchesButton() {
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [summary, setSummary] = useState<SyncSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type RecalculateSummary = {
+  source: "database" | "demo";
+  period: "all";
+  leagueId: number | null;
+  rowsWritten: number;
+};
 
-  async function syncMatches() {
-    setIsSyncing(true);
-    setSummary(null);
-    setError(null);
+type ActionState = {
+  isRunning: boolean;
+  message: string | null;
+  error: string | null;
+};
+
+async function postAdminAction<T>(endpoint: string, secret: string): Promise<T> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "x-admin-secret": secret },
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? payload.errorMessage ?? "Admin action failed");
+  return payload as T;
+}
+
+export function SyncMatchesButton() {
+  const [sync, setSync] = useState<ActionState>({ isRunning: false, message: null, error: null });
+  const [recalculate, setRecalculate] = useState<ActionState>({ isRunning: false, message: null, error: null });
+
+  async function runAction<T>(endpoint: string, onSuccess: (payload: T) => string, setState: (state: ActionState) => void) {
+    setState({ isRunning: true, message: null, error: null });
 
     const secret = window.prompt("ADMIN_SECRET");
     if (secret == null) {
-      setIsSyncing(false);
+      setState({ isRunning: false, message: null, error: null });
       return;
     }
 
     try {
-      const response = await fetch("/api/admin/sync/matches", {
-        method: "POST",
-        headers: { "x-admin-secret": secret },
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? payload.errorMessage ?? "Sync failed");
-      setSummary(payload);
-    } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : "Sync failed");
-    } finally {
-      setIsSyncing(false);
+      const payload = await postAdminAction<T>(endpoint, secret);
+      setState({ isRunning: false, message: onSuccess(payload), error: null });
+    } catch (actionError) {
+      setState({ isRunning: false, message: null, error: actionError instanceof Error ? actionError.message : "Admin action failed" });
     }
   }
 
   return (
     <div className="space-y-3">
-      <button onClick={syncMatches} disabled={isSyncing} className="w-full rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60">
-        {isSyncing ? "Syncing…" : "Sync Matches"}
+      <button
+        onClick={() => runAction<SyncSummary>("/api/admin/sync/matches", (summary) => `Sync ${summary.status}: ${summary.recordsProcessed} matches processed. Registered: ${summary.buckets.registered ?? 0}, active: ${summary.buckets.in_progress ?? 0}, finished: ${summary.buckets.finished ?? 0}.`, setSync)}
+        disabled={sync.isRunning || recalculate.isRunning}
+        className="w-full rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {sync.isRunning ? "Syncing…" : "Sync Matches"}
       </button>
-      {summary ? (
-        <div className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">
-          <p className="font-semibold">Sync {summary.status}: {summary.recordsProcessed} matches processed.</p>
-          <p className="mt-1 text-emerald-200/80">Registered: {summary.buckets.registered ?? 0}, active: {summary.buckets.in_progress ?? 0}, finished: {summary.buckets.finished ?? 0}</p>
-        </div>
-      ) : null}
-      {error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{error}</p> : null}
+      <button
+        onClick={() => runAction<RecalculateSummary>("/api/admin/recalculate", (summary) => `Recalculated ${summary.rowsWritten} contribution rows from ${summary.source} data for period ${summary.period}.`, setRecalculate)}
+        disabled={sync.isRunning || recalculate.isRunning}
+        className="w-full rounded-2xl border border-yellow-300/30 px-4 py-3 font-semibold text-yellow-100 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {recalculate.isRunning ? "Recalculating…" : "Recalculate"}
+      </button>
+      {sync.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{sync.message}</p> : null}
+      {recalculate.message ? <p className="rounded-2xl border border-emerald-300/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{recalculate.message}</p> : null}
+      {sync.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{sync.error}</p> : null}
+      {recalculate.error ? <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-4 text-sm text-rose-100">{recalculate.error}</p> : null}
     </div>
   );
 }

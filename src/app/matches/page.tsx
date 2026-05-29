@@ -12,7 +12,7 @@ function filterHref(official: string, league: string) {
   return query ? `/matches?${query}` : "/matches";
 }
 
-function FilterLink({ href, active, children }: { href: string; active: boolean; children: React.ReactNode }) {
+function FilterLink({ href, active, children }: { href: string; active: boolean; children: string }) {
   return <Link href={href} className={`rounded-full border px-3 py-1.5 text-sm ${active ? "border-cyan-300/40 bg-cyan-400/20 text-cyan-100" : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"}`}>{children}</Link>;
 }
 

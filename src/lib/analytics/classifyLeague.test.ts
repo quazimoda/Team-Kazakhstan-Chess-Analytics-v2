@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 import { classifyLeague } from "./classifyLeague";
 
 describe("classifyLeague", () => {
@@ -12,7 +13,7 @@ describe("classifyLeague", () => {
 
   for (const [name, expectedSlug] of cases) {
     it(`classifies ${name} as ${expectedSlug}`, () => {
-      expect(classifyLeague(name).leagueSlug).toBe(expectedSlug);
+      assert.equal(classifyLeague(name).leagueSlug, expectedSlug);
     });
   }
 });
