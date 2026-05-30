@@ -11,7 +11,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "test": "rm -rf .test-build && tsc -p tsconfig.test.json && find .test-build -name \"*.test.js\" -print0 | xargs -0 node --test",
-    "audit:old-sqlite-official": "tsx scripts/audit-old-sqlite-official.ts"
+    "audit:old-sqlite-official": "tsx scripts/audit-old-sqlite-official.ts",
+    "import:old-sqlite-official": "tsx scripts/import-old-sqlite-official.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",

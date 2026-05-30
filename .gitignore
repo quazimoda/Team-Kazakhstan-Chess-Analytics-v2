@@ -14,3 +14,5 @@ local-data/
 *.sqlite
 *.sqlite3
 old-db-audit-output/
+
+old-db-import-output/
