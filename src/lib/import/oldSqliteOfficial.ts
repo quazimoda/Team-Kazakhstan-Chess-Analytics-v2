@@ -160,6 +160,12 @@ export function resultForColor(result: string | null | undefined, color: Color):
   return "unknown";
 }
 
+export function resultForTeamPlayer(result: string | null | undefined, players: { whiteIsTeamMember: boolean; blackIsTeamMember: boolean }): GameResult {
+  if (players.whiteIsTeamMember && !players.blackIsTeamMember) return resultForColor(result, "white");
+  if (players.blackIsTeamMember && !players.whiteIsTeamMember) return resultForColor(result, "black");
+  return "unknown";
+}
+
 export function scoreForResult(result: GameResult) {
   if (result === "win") return 1;
   if (result === "draw") return 0.5;

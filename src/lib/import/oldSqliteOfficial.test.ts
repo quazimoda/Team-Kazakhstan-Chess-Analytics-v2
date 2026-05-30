@@ -10,6 +10,7 @@ import {
   shouldRecalculateContributions,
   normalizedGameKeys,
   resultForColor,
+  resultForTeamPlayer,
   type CurrentMatchForImport,
   type OldSqliteGameRow,
 } from "./oldSqliteOfficial";
@@ -59,6 +60,15 @@ test("resultForColor derives win draw loss from PGN result and player color", ()
   assert.equal(resultForColor("0-1", "black"), "win");
   assert.equal(resultForColor("1/2-1/2", "white"), "draw");
   assert.equal(resultForColor("*", "black"), "unknown");
+});
+
+test("resultForTeamPlayer stores imported game results from the Team Kazakhstan player perspective", () => {
+  assert.equal(resultForTeamPlayer("1-0", { whiteIsTeamMember: true, blackIsTeamMember: false }), "win");
+  assert.equal(resultForTeamPlayer("0-1", { whiteIsTeamMember: true, blackIsTeamMember: false }), "loss");
+  assert.equal(resultForTeamPlayer("0-1", { whiteIsTeamMember: false, blackIsTeamMember: true }), "win");
+  assert.equal(resultForTeamPlayer("1-0", { whiteIsTeamMember: false, blackIsTeamMember: true }), "loss");
+  assert.equal(resultForTeamPlayer("1/2-1/2", { whiteIsTeamMember: true, blackIsTeamMember: false }), "draw");
+  assert.equal(resultForTeamPlayer("1/2-1/2", { whiteIsTeamMember: false, blackIsTeamMember: true }), "draw");
 });
 
 test("executeImportPlan dry-run mode does not call writeCandidate", async () => {

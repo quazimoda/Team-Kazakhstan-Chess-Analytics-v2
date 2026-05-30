@@ -15,6 +15,7 @@ import {
   parseEndTime,
   parseRating,
   resultForColor,
+  resultForTeamPlayer,
   scoreForResult,
   type CurrentMatchForImport,
   type OldSqliteGameRow,
@@ -261,7 +262,7 @@ async function importCandidate(sql: Sql, candidate: ImportCandidate, options: { 
   const values: unknown[] = [candidate.sourceId, candidate.match.id, white?.id ?? null, black?.id ?? null, candidate.row.time_class, 1, candidate.row.pgn, endTime, JSON.stringify(rawGame)];
   if (options.supportsResult) {
     columns.push("result");
-    values.push(candidate.tags.result === "1/2-1/2" ? "draw" : candidate.tags.result === "1-0" ? "win" : candidate.tags.result === "0-1" ? "loss" : "unknown");
+    values.push(resultForTeamPlayer(candidate.tags.result, { whiteIsTeamMember: white?.is_team_member === 1, blackIsTeamMember: black?.is_team_member === 1 }));
   }
   if (options.supportsWhiteRating) {
     columns.push("white_rating");
