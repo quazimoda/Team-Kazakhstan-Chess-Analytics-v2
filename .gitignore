@@ -9,3 +9,8 @@ dist
 .DS_Store
 *.tsbuildinfo
 drizzle/meta
+local-data/
+*.db
+*.sqlite
+*.sqlite3
+old-db-audit-output/
