@@ -100,3 +100,89 @@ The next step after reviewing the dry-run output should be a separate importer w
 - PGN metadata may be incomplete or inconsistent for older daily/team matches.
 - `rules` values outside `chess` and `chess960` are intentionally excluded from final candidates to avoid accidentally importing variants.
 - Importing games without recalculating participations/contributions would leave analytics inconsistent.
+
+## Safe importer
+
+The importer added after the audit uses the same eligibility rules as the dry-run audit and defaults to read-only dry-run mode.
+
+### Importer dry-run command
+
+```bash
+OLD_SQLITE_PATH="$PWD/local-data/chess_export.db" \
+DATABASE_URL="postgres://..." \
+npm run import:old-sqlite-official
+```
+
+Dry-run is the default. If `IMPORT_OLD_SQLITE` is unset, empty, or any value other than exactly `true`, the importer opens PostgreSQL with a read-only transaction, scans the old SQLite database, writes review logs under `old-db-import-output/`, and rolls back without inserting games, players, participations, or contributions.
+
+### Real import command
+
+> **Warning:** writes are enabled only when `IMPORT_OLD_SQLITE=true` is present exactly. Contribution recalculation is a separate opt-in step and runs in the same transaction only when `RECALCULATE_AFTER_IMPORT=true` is present exactly. Do not run the write mode directly against production until the dry-run CSVs have been reviewed and a current database backup exists.
+
+```bash
+OLD_SQLITE_PATH="$PWD/local-data/chess_export.db" \
+DATABASE_URL="postgres://..." \
+IMPORT_OLD_SQLITE=true \
+RECALCULATE_AFTER_IMPORT=true \
+npm run import:old-sqlite-official
+```
+
+Recommended rollout:
+
+1. create a fresh backup or restore point for the target PostgreSQL database;
+2. run the importer against a disposable/staging Neon branch first;
+3. review `old-db-import-output/import_summary.json` and the CSVs;
+4. run the verification SQL below on staging;
+5. repeat against production only after the staging counts match expectations.
+
+The importer intentionally does not seed, classify, or reclassify matches. Old games whose Chess.com match id is absent from current `matches.chesscom_match_id` remain skipped as unmatched, and games linked to current non-official/no-league matches are skipped.
+
+When `RECALCULATE_AFTER_IMPORT=true` is set during a real import, the importer recalculates only `player_contributions` rows with `period = 'all'` whose `league_id` is one of the official league ids touched by imported games. It deletes and rebuilds only those affected contribution rows from current `match_participations`; it does not delete contribution rows for unrelated leagues or null-league matches. If `RECALCULATE_AFTER_IMPORT` is omitted, the importer writes games/participations and prints the affected league ids so recalculation can be run separately through the existing admin recalculation workflow.
+
+### Post-import verification SQL
+
+```sql
+-- Imported old SQLite games by league.
+select l.slug, count(*) as imported_games
+from games g
+join matches m on m.id = g.match_id
+join leagues l on l.id = m.league_id
+where g.raw_game->>'source' = 'old_sqlite'
+group by l.slug
+order by imported_games desc;
+
+-- Confirm imported games are only attached to official league matches.
+select count(*) as bad_imported_games
+from games g
+join matches m on m.id = g.match_id
+where g.raw_game->>'source' = 'old_sqlite'
+  and (m.is_official <> 1 or m.league_id is null);
+
+-- Confirm only chess/chess960 variants were imported.
+select g.raw_game->>'old_rules' as old_rules, count(*)
+from games g
+where g.raw_game->>'source' = 'old_sqlite'
+group by old_rules
+order by old_rules;
+
+-- Check for duplicate source identifiers after import.
+select chesscom_game_uuid, count(*)
+from games
+where raw_game->>'source' = 'old_sqlite'
+group by chesscom_game_uuid
+having count(*) > 1;
+
+-- Participation and contribution sanity checks.
+select count(*) as old_sqlite_participation_rows
+from match_participations mp
+where exists (
+  select 1
+  from games g
+  where g.match_id = mp.match_id
+    and g.raw_game->>'source' = 'old_sqlite'
+);
+
+select count(*) as contribution_rows
+from player_contributions
+where period = 'all';
+```
