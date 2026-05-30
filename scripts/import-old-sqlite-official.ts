@@ -1,14 +1,16 @@
 import { createWriteStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import postgres, { type Sql } from "postgres";
 import {
   bestSourceId,
+  choosePythonCommand,
   evaluateCandidateEligibility,
   executeImportPlan,
   extractPgnTags,
   isImportEnabled,
+  shouldRecalculateContributions,
   normalizedGameKeys,
   parseEndTime,
   parseRating,
@@ -67,12 +69,23 @@ function writeCsv<T extends Record<string, unknown>>(path: string, rows: T[], co
   stream.end();
 }
 
+function commandExists(command: "python3" | "python") {
+  const result = spawnSync(command, ["--version"], { stdio: "ignore" });
+  return !result.error && result.status === 0;
+}
+
 async function* oldSqliteRows(sqlitePath: string): AsyncGenerator<SqliteMessage> {
-  const python = spawn("python3", ["-", sqlitePath], { stdio: ["pipe", "pipe", "inherit"] });
+  const pythonCommand = choosePythonCommand(commandExists);
+  const python = spawn(pythonCommand, ["-", sqlitePath], { stdio: ["pipe", "pipe", "inherit"] });
   python.stdin.end(String.raw`
 import json
 import sqlite3
 import sys
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except AttributeError:
+    pass
 
 path = sys.argv[1]
 uri = "file:" + path + "?mode=ro"
@@ -292,8 +305,9 @@ async function upsertParticipations(sql: Sql, aggregates: Map<string, Participat
   }
 }
 
-async function recalculateContributions(sql: Sql) {
-  await sql`delete from player_contributions where period = 'all'`;
+async function recalculateContributions(sql: Sql, leagueIds: number[]) {
+  if (leagueIds.length === 0) return 0;
+  await sql`delete from player_contributions where period = 'all' and league_id = any(${leagueIds})`;
   const inserted = await sql<{ count: number }[]>`
     with aggregates as (
       select
@@ -311,6 +325,7 @@ async function recalculateContributions(sql: Sql) {
       from match_participations mp
       inner join matches m on m.id = mp.match_id
       where m.is_official = 1
+        and m.league_id = any(${leagueIds})
       group by mp.player_id, m.league_id
     ), scored as (
       select
@@ -355,6 +370,7 @@ async function main() {
   if (!existsSync(sqlitePath)) throw new Error(`OLD_SQLITE_PATH does not exist: ${sqlitePath}`);
   const databaseUrl = requiredEnv("DATABASE_URL");
   const dryRun = !isImportEnabled(process.env.IMPORT_OLD_SQLITE);
+  const recalculateAfterImport = shouldRecalculateContributions(dryRun, process.env.RECALCULATE_AFTER_IMPORT);
   mkdirSync(outputDir, { recursive: true });
 
   const sql = postgres(databaseUrl, { prepare: false, max: 1 });
@@ -377,7 +393,9 @@ async function main() {
     players_upserted: 0,
     participations_upserted: 0,
     contributions_recalculated: 0 as number | null,
-    recalculation_required: dryRun,
+    recalculation_required: false,
+    recalculate_after_import: recalculateAfterImport,
+    recalculated_league_ids: [] as number[],
   };
 
   try {
@@ -427,6 +445,7 @@ async function main() {
     const supportsBlackRating = await columnExists(sql, "games", "black_rating");
     const supportsResult = await columnExists(sql, "games", "result");
     const playerIds = new Set<number>();
+    const importedLeagueIds = new Set<number>();
     const participationAggregates = new Map<string, ParticipationAggregate>();
 
     await executeImportPlan({
@@ -444,6 +463,7 @@ async function main() {
           playerIds.add(players.black.id);
           addParticipation(participationAggregates, candidate, players.black, "black");
         }
+        if (candidate.match.leagueId != null) importedLeagueIds.add(candidate.match.leagueId);
         summary.imported_games += 1;
         importedLogs.push(candidateLog(candidate, "imported"));
       },
@@ -453,13 +473,20 @@ async function main() {
       await upsertParticipations(sql, participationAggregates);
       summary.players_upserted = playerIds.size;
       summary.participations_upserted = participationAggregates.size;
-      summary.contributions_recalculated = await recalculateContributions(sql);
-      summary.recalculation_required = false;
+      summary.recalculated_league_ids = [...importedLeagueIds].sort((a, b) => a - b);
+      if (recalculateAfterImport) {
+        summary.contributions_recalculated = await recalculateContributions(sql, summary.recalculated_league_ids);
+        summary.recalculation_required = false;
+      } else {
+        summary.contributions_recalculated = null;
+        summary.recalculation_required = summary.imported_games > 0;
+      }
     } else {
       summary.imported_games = 0;
       summary.players_upserted = 0;
       summary.participations_upserted = 0;
       summary.contributions_recalculated = null;
+      summary.recalculation_required = false;
       for (const candidate of candidates) importedLogs.push(candidateLog(candidate, "dry_run_candidate"));
     }
 
@@ -484,7 +511,8 @@ async function main() {
 
   console.log("Old SQLite official import final summary:");
   console.log(JSON.stringify(summary, null, 2));
-  if (dryRun) console.log('Dry-run only. Set IMPORT_OLD_SQLITE=true to write imported games, participations, and recalculated contributions.');
+  if (dryRun) console.log('Dry-run only. Set IMPORT_OLD_SQLITE=true to write imported games and participations. Set RECALCULATE_AFTER_IMPORT=true with import mode to recalculate affected official league contribution rows in the same transaction.');
+  else if (summary.recalculation_required) console.log(`Contribution recalculation was not run. Run the existing admin recalculation endpoint or rerun this importer against a restored pre-import backup with RECALCULATE_AFTER_IMPORT=true. Affected league ids: ${summary.recalculated_league_ids.join(", ")}.`);
 }
 
 main().catch((error) => {

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  choosePythonCommand,
   evaluateCandidateEligibility,
   executeImportPlan,
   extractPgnTags,
+  isImportEnabled,
+  isRecalculateEnabled,
+  shouldRecalculateContributions,
   normalizedGameKeys,
   resultForColor,
   type CurrentMatchForImport,
@@ -62,4 +66,32 @@ test("executeImportPlan dry-run mode does not call writeCandidate", async () => 
   const result = await executeImportPlan({ dryRun: true, candidates: [1, 2, 3], writeCandidate: async () => { writes += 1; } });
   assert.equal(result.written, 0);
   assert.equal(writes, 0);
+});
+
+
+test('isImportEnabled only allows the exact string "true"', () => {
+  assert.equal(isImportEnabled("true"), true);
+  assert.equal(isImportEnabled("TRUE"), false);
+  assert.equal(isImportEnabled(" true"), false);
+  assert.equal(isImportEnabled(undefined), false);
+});
+
+test("choosePythonCommand prefers python3, falls back to python, and errors clearly", () => {
+  assert.equal(choosePythonCommand((command) => command === "python3"), "python3");
+  assert.equal(choosePythonCommand((command) => command === "python"), "python");
+  assert.throws(() => choosePythonCommand(() => false), /neither python3 nor python/);
+});
+
+test('isRecalculateEnabled only allows the exact string "true"', () => {
+  assert.equal(isRecalculateEnabled("true"), true);
+  assert.equal(isRecalculateEnabled("TRUE"), false);
+  assert.equal(isRecalculateEnabled(" true"), false);
+  assert.equal(isRecalculateEnabled(undefined), false);
+});
+
+test("shouldRecalculateContributions is disabled in dry-run and gated by RECALCULATE_AFTER_IMPORT", () => {
+  assert.equal(shouldRecalculateContributions(true, "true"), false);
+  assert.equal(shouldRecalculateContributions(false, "true"), true);
+  assert.equal(shouldRecalculateContributions(false, "TRUE"), false);
+  assert.equal(shouldRecalculateContributions(false, undefined), false);
 });

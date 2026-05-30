@@ -1,8 +1,9 @@
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import postgres from "postgres";
+import { choosePythonCommand } from "../src/lib/import/oldSqliteOfficial";
 
 type OldGameRow = {
   game_url: string;
@@ -238,14 +239,25 @@ async function loadNewMatchesAndGames(databaseUrl: string) {
   }
 }
 
+function commandExists(command: "python3" | "python") {
+  const result = spawnSync(command, ["--version"], { stdio: "ignore" });
+  return !result.error && result.status === 0;
+}
+
 async function* oldSqliteRows(sqlitePath: string): AsyncGenerator<SqliteMessage> {
-  const python = spawn("python3", ["-", sqlitePath], {
+  const pythonCommand = choosePythonCommand(commandExists);
+  const python = spawn(pythonCommand, ["-", sqlitePath], {
     stdio: ["pipe", "pipe", "inherit"],
   });
   python.stdin.end(String.raw`
 import json
 import sqlite3
 import sys
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except AttributeError:
+    pass
 
 path = sys.argv[1]
 uri = "file:" + path + "?mode=ro"

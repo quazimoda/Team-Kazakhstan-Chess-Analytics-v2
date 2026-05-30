@@ -47,6 +47,22 @@ export type CandidateEvaluation = {
 export type Color = "white" | "black";
 export type GameResult = "win" | "draw" | "loss" | "unknown";
 
+export type PythonCommand = "python3" | "python";
+
+export function choosePythonCommand(isCommandAvailable: (command: PythonCommand) => boolean): PythonCommand {
+  if (isCommandAvailable("python3")) return "python3";
+  if (isCommandAvailable("python")) return "python";
+  throw new Error("Python is required to read OLD_SQLITE_PATH, but neither python3 nor python is available on PATH.");
+}
+
+export function isRecalculateEnabled(value: string | undefined) {
+  return value === "true";
+}
+
+export function shouldRecalculateContributions(dryRun: boolean, value: string | undefined) {
+  return !dryRun && isRecalculateEnabled(value);
+}
+
 const matchUrlPattern = /\[Match\s+"(https:\/\/www\.chess\.com\/club\/matches\/(?:live\/)?(\d+))"\]/;
 const tags = {
   event: /\[Event\s+"([^"]+)"\]/,
