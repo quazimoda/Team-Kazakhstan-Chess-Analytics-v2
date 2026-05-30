@@ -68,7 +68,7 @@ type DuplicateRow = OldGameRow & ExtractedTags & {
   leagueSlug: string | null;
 };
 
-const OLD_MATCH_RE = /\[Match\s+"https:\/\/www\.chess\.com\/club\/matches\/(\d+)"\]/;
+const OLD_MATCH_RE = /\[Match\s+"https:\/\/www\.chess\.com\/club\/matches\/(?:live\/)?(\d+)"\]/;
 const TAGS = {
   event: /\[Event\s+"([^"]+)"\]/,
   white: /\[White\s+"([^"]+)"\]/,
@@ -111,9 +111,9 @@ function extractTags(pgn: string): ExtractedTags | null {
   };
 }
 
-function normalizedGameKeys(gameUrl: string | null | undefined, link: string | null | undefined) {
+function normalizedGameKeys(...values: (string | null | undefined)[]) {
   const keys = new Set<string>();
-  for (const raw of [gameUrl, link]) {
+  for (const raw of values) {
     const value = raw?.trim();
     if (!value) continue;
     keys.add(value);
@@ -189,8 +189,20 @@ async function loadNewMatchesAndGames(databaseUrl: string) {
       left join leagues l on l.id = m.league_id
       where m.chesscom_match_id is not null
     `;
-    const gameRows = await sql<{ chesscom_game_uuid: string }[]>`
-      select chesscom_game_uuid from games where chesscom_game_uuid is not null
+    const gameRows = await sql<{
+      chesscom_game_uuid: string | null;
+      raw_url: string | null;
+      raw_game_url: string | null;
+      raw_link: string | null;
+    }[]>`
+      select
+        chesscom_game_uuid,
+        raw_game->>'url' as raw_url,
+        raw_game->>'game_url' as raw_game_url,
+        raw_game->>'link' as raw_link
+      from games
+      where chesscom_game_uuid is not null
+        or raw_game ?| array['url', 'game_url', 'link']
     `;
     await sql`rollback`;
 
@@ -210,7 +222,7 @@ async function loadNewMatchesAndGames(databaseUrl: string) {
 
     const existingGameKeys = new Set<string>();
     for (const row of gameRows) {
-      for (const key of normalizedGameKeys(row.chesscom_game_uuid, null)) existingGameKeys.add(key);
+      for (const key of normalizedGameKeys(row.chesscom_game_uuid, row.raw_url, row.raw_game_url, row.raw_link)) existingGameKeys.add(key);
     }
 
     return { matchesByChesscomId, existingGameKeys };
@@ -324,6 +336,9 @@ async function main() {
       unmatchedOldMatchIds.add(tags.chesscomMatchId);
       increment(unmatchedCounts, tags.chesscomMatchId);
       increment(unmatchedEvents, tags.event ?? "(missing Event)");
+      if (isDuplicate) {
+        duplicateRows.push({ ...message, ...tags, duplicateKeys: duplicateKeys.join(" | "), newMatchId: null, leagueSlug: null });
+      }
       continue;
     }
 

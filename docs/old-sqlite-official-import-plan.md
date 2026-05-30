@@ -52,7 +52,7 @@ The script fails early if `OLD_SQLITE_PATH` is missing or points to a nonexisten
 
 The dry-run extracts these PGN tags from old `games.pgn` values:
 
-- `Match` club-match URL and numeric Chess.com match id;
+- `Match` club-match URL and numeric Chess.com match id from either `/club/matches/{id}` or `/club/matches/live/{id}`;
 - `Event`;
 - `White`;
 - `Black`;
@@ -68,7 +68,7 @@ A game is counted as a final import candidate only when all of these checks pass
 2. the current match has `matches.is_official = 1`;
 3. the current match has a non-null `matches.league_id`;
 4. the legacy `rules` value is `chess` or `chess960`;
-5. the legacy `game_url` or PGN `Link` does not already exist in current `games.chesscom_game_uuid` or an equivalent normalized URL/id form.
+5. the legacy `game_url` or PGN `Link` does not already exist in current `games.chesscom_game_uuid`, `raw_game->>'url'`, `raw_game->>'game_url'`, `raw_game->>'link'`, or an equivalent normalized numeric game-id form extracted from any of those URLs.
 
 The script writes CSV files under `old-db-audit-output/`:
 
@@ -96,7 +96,7 @@ The next step after reviewing the dry-run output should be a separate importer w
 
 - Some legacy events are non-target competitions or friendly/team-specific matches even though they use Chess.com club-match PGN tags.
 - Current Neon may not yet contain every historical official match id, so official old games can appear in the unmatched CSV until missing matches are seeded/classified.
-- Chess.com game URLs are not always represented identically across old SQLite exports, match-detail sync, and player-archive sync; duplicate detection therefore uses normalized URL/id equivalents but still needs manual review.
+- Chess.com game URLs are not always represented identically across old SQLite exports, match-detail sync, and player-archive sync; duplicate detection therefore checks `games.chesscom_game_uuid`, `raw_game` URL fields, and normalized URL/id equivalents, but still needs manual review.
 - PGN metadata may be incomplete or inconsistent for older daily/team matches.
 - `rules` values outside `chess` and `chess960` are intentionally excluded from final candidates to avoid accidentally importing variants.
 - Importing games without recalculating participations/contributions would leave analytics inconsistent.
