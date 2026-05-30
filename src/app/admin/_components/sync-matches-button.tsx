@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 type SyncSummary = {
@@ -65,8 +66,28 @@ type DataQualitySummary = {
   contributionRows: number;
   officialMatchesWithParticipations: number;
   unknownMatchesCount: number;
+  officialLeaguesWithMatchesButNoGames: string[];
+  officialMonthsWithZeroArchiveProgress: string[];
+  lcalOfficialMatches: number;
+  lcalParticipations: number;
   warnings: string[];
 };
+
+type BackfillMonthProgress = {
+  year: number;
+  month: number;
+  officialMatchCount: number;
+  teamMembersTotal: number;
+  syncedTeamMembers: number;
+  failedTeamMembers: number;
+  runningTeamMembers: number;
+  skippedTeamMembers: number;
+  progressPercent: number;
+  gamesImportedForMonth: number;
+  participationsForMonth: number;
+};
+
+type BackfillMonthsResponse = { data: BackfillMonthProgress[] };
 
 type UnknownMatchReview = {
   data: Array<{
@@ -149,6 +170,15 @@ function formatNumber(value: number | string) {
   return typeof value === "string" ? value : new Intl.NumberFormat().format(value);
 }
 
+function formatMonth(year: number, month: number) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function archiveSummaryMessage(prefix: string, summary: PlayerArchivesSummary) {
+  const problems = [...summary.warnings, ...summary.errors];
+  return `${prefix}: ${summary.playersProcessed} players processed, ${summary.gamesScanned} games scanned, ${summary.gamesMatched} games matched, ${summary.gamesUpserted} games upserted, ${summary.participationsUpserted} participations upserted.${problems.length ? ` Warnings/errors: ${problems.slice(0, 5).join("; ")}` : ""}`;
+}
+
 function DataQualityCards({ data }: { data: DataQualitySummary | null }) {
   const cards = [
     ["Team members", data?.teamMembersTotal],
@@ -159,6 +189,7 @@ function DataQualityCards({ data }: { data: DataQualitySummary | null }) {
     ["Contribution rows", data?.contributionRows],
     ["Team members with participations", data?.teamMembersWithParticipations],
     ["Official matches with participations", data?.officialMatchesWithParticipations],
+    ["LCAL participations", data?.lcalParticipations],
     ["Unknown matches", data?.unknownMatchesCount],
     ["Archive backfill progress", data?.archiveBackfillProgressPercent == null ? undefined : `${data.archiveBackfillProgressPercent}%`],
   ] as const;
@@ -183,6 +214,7 @@ export function SyncMatchesButton() {
   const [recalculate, setRecalculate] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [reclassify, setReclassify] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const [dataQuality, setDataQuality] = useState<DataQualitySummary | null>(null);
+  const [backfillMonths, setBackfillMonths] = useState<BackfillMonthProgress[]>([]);
   const [unknownMatches, setUnknownMatches] = useState<UnknownMatchReview["data"]>([]);
   const [quality, setQuality] = useState<ActionState>({ isRunning: false, message: null, error: null });
   const isBusy = sync.isRunning || details.isRunning || players.isRunning || archives.isRunning || recalculate.isRunning || reclassify.isRunning || quality.isRunning;
@@ -196,9 +228,12 @@ export function SyncMatchesButton() {
     getAdminAction<UnknownMatchReview>("/api/admin/unknown-matches?limit=25", savedSecret)
       .then((payload) => setUnknownMatches(payload.data))
       .catch(() => undefined);
+    getAdminAction<BackfillMonthsResponse>("/api/admin/backfill/months", savedSecret)
+      .then((payload) => setBackfillMonths(payload.data))
+      .catch(() => undefined);
   }, []);
 
-  async function runAction<T>(endpoint: string, onSuccess: (payload: T) => string, setState: (state: ActionState) => void) {
+  async function runAction<T>(endpoint: string, onSuccess: (payload: T) => string, setState: (state: ActionState) => void, afterSuccess?: (secret: string) => Promise<void>) {
     setState({ isRunning: true, message: null, error: null });
 
     const secret = window.prompt("ADMIN_SECRET", window.sessionStorage.getItem("adminSecret") ?? "");
@@ -210,10 +245,30 @@ export function SyncMatchesButton() {
     try {
       window.sessionStorage.setItem("adminSecret", secret);
       const payload = await postAdminAction<T>(endpoint, secret);
+      if (afterSuccess) await afterSuccess(secret);
       setState({ isRunning: false, message: onSuccess(payload), error: null });
     } catch (actionError) {
       setState({ isRunning: false, message: null, error: actionError instanceof Error ? actionError.message : "Admin action failed" });
     }
+  }
+
+  async function refreshBackfillMonths(secret: string) {
+    const payload = await getAdminAction<BackfillMonthsResponse>("/api/admin/backfill/months", secret);
+    setBackfillMonths(payload.data);
+  }
+
+  async function syncBackfillMonth(month: BackfillMonthProgress, mode: "next" | "retry-failed") {
+    const label = formatMonth(month.year, month.month);
+    await runAction<PlayerArchivesSummary>(`/api/admin/sync/player-archives?mode=${mode}&limitPlayers=25&year=${month.year}&month=${month.month}`, (summary) => archiveSummaryMessage(`${mode === "retry-failed" ? "Retry failed" : "Player archives"} ${label}`, summary), setArchives, refreshBackfillMonths);
+  }
+
+  async function syncNextIncompleteMonth() {
+    const month = backfillMonths.find((item) => item.progressPercent < 100);
+    if (!month) {
+      setArchives({ isRunning: false, message: "All official match months are fully synced.", error: null });
+      return;
+    }
+    await syncBackfillMonth(month, "next");
   }
 
   async function refreshDataQuality() {
@@ -225,12 +280,14 @@ export function SyncMatchesButton() {
     }
     try {
       window.sessionStorage.setItem("adminSecret", secret);
-      const [payload, unknownPayload] = await Promise.all([
+      const [payload, unknownPayload, backfillPayload] = await Promise.all([
         getAdminAction<DataQualitySummary>("/api/admin/data-quality", secret),
         getAdminAction<UnknownMatchReview>("/api/admin/unknown-matches?limit=25", secret),
+        getAdminAction<BackfillMonthsResponse>("/api/admin/backfill/months", secret),
       ]);
       setDataQuality(payload);
       setUnknownMatches(unknownPayload.data);
+      setBackfillMonths(backfillPayload.data);
       setQuality({ isRunning: false, message: `Data quality refreshed from ${payload.source}.`, error: null });
     } catch (actionError) {
       setQuality({ isRunning: false, message: null, error: actionError instanceof Error ? actionError.message : "Data quality refresh failed" });
@@ -242,6 +299,63 @@ export function SyncMatchesButton() {
       <DataQualityCards data={dataQuality} />
       {dataQuality ? <p className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 p-4 text-sm text-cyan-100">Next action: keep syncing player archives until archive synced team members reaches 100%, then review unknown matches and recalculate contributions.</p> : null}
       {dataQuality?.warnings.length ? <p className="rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4 text-sm text-yellow-100">{dataQuality.warnings.slice(0, 4).join(" ")}</p> : null}
+
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-white">Historical Backfill by Month</h3>
+            <p className="mt-1 text-sm text-slate-400">Progress is calculated against players.is_team_member = 1 for each official match month.</p>
+          </div>
+          <button
+            onClick={syncNextIncompleteMonth}
+            disabled={isBusy || backfillMonths.length === 0}
+            className="rounded-xl bg-purple-400 px-3 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {archives.isRunning ? "Syncing…" : "Sync next incomplete month"}
+          </button>
+        </div>
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[920px] text-left text-sm">
+            <thead className="text-slate-400">
+              <tr className="border-b border-white/10">
+                <th className="py-3">Month</th>
+                <th>Official matches</th>
+                <th>Synced team members</th>
+                <th>Failed</th>
+                <th>Progress %</th>
+                <th>Games</th>
+                <th>Participations</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {backfillMonths.length === 0 ? (
+                <tr><td colSpan={8} className="py-4 text-slate-500">Refresh data quality to load official match months.</td></tr>
+              ) : backfillMonths.map((month) => {
+                const label = formatMonth(month.year, month.month);
+                return (
+                  <tr key={label} className="border-b border-white/5 text-slate-200 last:border-0">
+                    <td className="py-4 font-medium text-white">{label}</td>
+                    <td>{formatNumber(month.officialMatchCount)}</td>
+                    <td>{formatNumber(month.syncedTeamMembers)} / {formatNumber(month.teamMembersTotal)}</td>
+                    <td>{formatNumber(month.failedTeamMembers)}</td>
+                    <td>{month.progressPercent}%</td>
+                    <td>{formatNumber(month.gamesImportedForMonth)}</td>
+                    <td>{formatNumber(month.participationsForMonth)}</td>
+                    <td>
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={() => syncBackfillMonth(month, "next")} disabled={isBusy} className="rounded-lg border border-purple-300/30 px-2 py-1 text-xs font-semibold text-purple-100 disabled:cursor-not-allowed disabled:opacity-60">Sync next 25</button>
+                        <button onClick={() => syncBackfillMonth(month, "retry-failed")} disabled={isBusy} className="rounded-lg border border-violet-300/30 px-2 py-1 text-xs font-semibold text-violet-100 disabled:cursor-not-allowed disabled:opacity-60">Retry failed</button>
+                        <Link href={`/matches?official=official&month=${label}`} className="rounded-lg border border-cyan-300/30 px-2 py-1 text-xs font-semibold text-cyan-100 hover:bg-cyan-400/10">Open related matches</Link>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
       <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -297,7 +411,7 @@ export function SyncMatchesButton() {
         onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=next&limitPlayers=10", (summary) => {
           const problems = [...summary.warnings, ...summary.errors];
           return `Player archives: ${summary.playersProcessed} players processed, ${summary.gamesScanned} games scanned, ${summary.gamesMatched} games matched, ${summary.gamesUpserted} games upserted, ${summary.participationsUpserted} participations upserted.${problems.length ? ` Warnings/errors: ${problems.slice(0, 5).join("; ")}` : ""}`;
-        }, setArchives)}
+        }, setArchives, refreshBackfillMonths)}
         disabled={isBusy}
         className="w-full rounded-2xl bg-violet-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
       >
@@ -305,14 +419,14 @@ export function SyncMatchesButton() {
       </button>
 
       <button
-        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=next&limitPlayers=25", (summary) => `Player archives: ${summary.playersProcessed} players processed, ${summary.gamesScanned} games scanned, ${summary.gamesMatched} games matched, ${summary.gamesUpserted} games upserted.`, setArchives)}
+        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=next&limitPlayers=25", (summary) => `Player archives: ${summary.playersProcessed} players processed, ${summary.gamesScanned} games scanned, ${summary.gamesMatched} games matched, ${summary.gamesUpserted} games upserted.`, setArchives, refreshBackfillMonths)}
         disabled={isBusy}
         className="w-full rounded-2xl bg-purple-400 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-purple-500/20 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {archives.isRunning ? "Syncing archives…" : "Sync next 25 players"}
       </button>
       <button
-        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=retry-failed&limitPlayers=25", (summary) => `Retry failed archives: ${summary.playersProcessed} players processed, ${summary.errors.length} errors.`, setArchives)}
+        onClick={() => runAction<PlayerArchivesSummary>("/api/admin/sync/player-archives?mode=retry-failed&limitPlayers=25", (summary) => `Retry failed archives: ${summary.playersProcessed} players processed, ${summary.errors.length} errors.`, setArchives, refreshBackfillMonths)}
         disabled={isBusy}
         className="w-full rounded-2xl border border-violet-300/30 px-4 py-3 font-semibold text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
       >
