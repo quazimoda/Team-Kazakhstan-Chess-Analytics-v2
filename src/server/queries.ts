@@ -64,16 +64,18 @@ export async function getPlayers(): Promise<ApiResponse<Player[]>> {
   }
 }
 
-export type MatchFilters = { official?: "official" | "all"; league?: string };
+export type MatchFilters = { official?: "official" | "all"; league?: string; month?: string };
 
 export async function getMatches(filters: MatchFilters = {}): Promise<ApiResponse<Match[]>> {
   const isOfficialOnly = filters.official === "official";
   const selectedLeague = filters.league && filters.league !== "all" ? filters.league : null;
+  const selectedMonth = filters.month && /^\d{4}-\d{2}$/.test(filters.month) ? filters.month : null;
   const applyFilters = (rows: Match[]) => rows.filter((match) => {
     const classification = classifyLeague(match.name);
     const leagueSlug = match.leagueSlug ?? classification.leagueSlug;
     if (isOfficialOnly && !classification.isOfficialCandidate) return false;
     if (selectedLeague && leagueSlug !== selectedLeague) return false;
+    if (selectedMonth && match.startsAt?.slice(0, 7) !== selectedMonth) return false;
     return true;
   });
 
@@ -82,6 +84,7 @@ export async function getMatches(filters: MatchFilters = {}): Promise<ApiRespons
   const conditions: SQL[] = [];
   if (selectedLeague) conditions.push(eq(leagues.slug, selectedLeague));
   if (isOfficialOnly) conditions.push(eq(matches.isOfficial, 1));
+  if (selectedMonth) conditions.push(sql`to_char(${matches.startsAt}, ${"YYYY-MM"}) = ${selectedMonth}`);
 
   try {
     const rows = await db
