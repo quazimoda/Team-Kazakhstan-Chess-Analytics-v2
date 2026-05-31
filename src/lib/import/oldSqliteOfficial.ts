@@ -26,6 +26,24 @@ export type PgnTags = {
   endTime: string | null;
 };
 
+export type OldSqliteRawGame = {
+  source: "old_sqlite";
+  url: string;
+  game_url: string | null;
+  link: string | null;
+  old_game_url: string | null;
+  old_date: number | null;
+  old_time_class: string | null;
+  old_time_control: string | null;
+  old_rules: string | null;
+  old_player: string | null;
+  old_opponent: string | null;
+  old_result: string | null;
+  is_tournament: number | null;
+  tournament_url: string | null;
+  pgn_tags: PgnTags;
+};
+
 export type CurrentMatchForImport = {
   id: number;
   chesscomMatchId: number;
@@ -48,7 +66,6 @@ export type Color = "white" | "black";
 export type GameResult = "win" | "draw" | "loss" | "unknown";
 
 export type PythonCommand = "python3" | "python";
-
 
 export type ImportPlayerRow = { id: number; username: string; is_team_member: number };
 
@@ -189,6 +206,30 @@ export function ruleIsImportable(rules: string | null | undefined) {
 
 export function bestSourceId(row: Pick<OldSqliteGameRow, "game_url">, tags: Pick<PgnTags, "link">) {
   return tags.link?.trim() || row.game_url?.trim() || null;
+}
+
+export function buildOldSqliteRawGame(row: OldSqliteGameRow, tags: PgnTags, sourceId: string): OldSqliteRawGame {
+  return {
+    source: "old_sqlite",
+    url: sourceId,
+    game_url: row.game_url,
+    link: tags.link,
+    old_game_url: row.game_url,
+    old_date: row.date,
+    old_time_class: row.time_class,
+    old_time_control: row.time_control,
+    old_rules: row.rules,
+    old_player: row.player,
+    old_opponent: row.opponent,
+    old_result: row.result,
+    is_tournament: row.is_tournament ?? null,
+    tournament_url: row.tournament_url ?? null,
+    pgn_tags: tags,
+  };
+}
+
+export function toOldSqliteRawGameJsonbParameter(rawGame: OldSqliteRawGame, jsonParameter: (value: OldSqliteRawGame) => unknown) {
+  return jsonParameter(rawGame);
 }
 
 export function evaluateCandidateEligibility(row: OldSqliteGameRow, matchesByChesscomId: Map<number, CurrentMatchForImport>, existingGameKeys: Set<string>): CandidateEvaluation {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildOldSqliteRawGame,
   choosePythonCommand,
   collectImportCandidateUsernames,
   evaluateCandidateEligibility,
@@ -10,6 +11,7 @@ import {
   isRecalculateEnabled,
   shouldRecalculateContributions,
   normalizedGameKeys,
+  toOldSqliteRawGameJsonbParameter,
   prepareImportPlayers,
   resultForColor,
   resultForTeamPlayer,
@@ -60,6 +62,52 @@ test("evaluateCandidateEligibility detects duplicates from normalized raw_game U
   assert.ok(evaluation.duplicateKeys.includes("999"));
 });
 
+test("buildOldSqliteRawGame keeps raw_game as a JSON object with old_sqlite source", () => {
+  const tags = extractPgnTags(row().pgn)!;
+  const rawGame = buildOldSqliteRawGame(row(), tags, "https://www.chess.com/game/daily/999");
+
+  assert.equal(typeof rawGame, "object");
+  assert.equal(Array.isArray(rawGame), false);
+  assert.equal(rawGame.source, "old_sqlite");
+  assert.equal(rawGame.url, "https://www.chess.com/game/daily/999");
+  assert.equal(rawGame.game_url, "https://www.chess.com/game/daily/999");
+  assert.equal(rawGame.link, "https://www.chess.com/game/daily/999");
+});
+
+test("toOldSqliteRawGameJsonbParameter passes the raw_game object to postgres json serialization", () => {
+  const tags = extractPgnTags(row().pgn)!;
+  const rawGame = buildOldSqliteRawGame(row(), tags, "https://www.chess.com/game/daily/999");
+  let captured: unknown;
+  const parameter = toOldSqliteRawGameJsonbParameter(rawGame, (value) => {
+    captured = value;
+    return { jsonbParameter: value };
+  });
+
+  assert.equal(captured, rawGame);
+  assert.equal(typeof captured, "object");
+  assert.notEqual(captured, JSON.stringify(rawGame));
+  assert.deepEqual(parameter, { jsonbParameter: rawGame });
+});
+
+test("old SQLite raw_game URL fields remain queryable for source and duplicate detection", () => {
+  const pgnLink = "https://www.chess.com/game/daily/999?move=12";
+  const oldGameUrl = "https://www.chess.com/game/daily/999/";
+  const tags = extractPgnTags(row({ game_url: oldGameUrl, pgn: `[Event "Team Match"]\n[Match "https://www.chess.com/club/matches/12345"]\n[White "KazPlayer"]\n[Black "Opponent"]\n[Result "1-0"]\n[Link "${pgnLink}"]` }).pgn)!;
+  const rawGame = buildOldSqliteRawGame(row({ game_url: oldGameUrl }), tags, pgnLink);
+
+  assert.equal(rawGame.source, "old_sqlite");
+  assert.equal(rawGame.url, pgnLink);
+  assert.equal(rawGame.game_url, oldGameUrl);
+  assert.equal(rawGame.link, pgnLink);
+
+  const matches = new Map([[officialMatch.chesscomMatchId, officialMatch]]);
+  const existingKeys = new Set(normalizedGameKeys(rawGame.url, rawGame.game_url, rawGame.link));
+  const evaluation = evaluateCandidateEligibility(row({ game_url: oldGameUrl, pgn: `[Event "Team Match"]\n[Match "https://www.chess.com/club/matches/12345"]\n[White "KazPlayer"]\n[Black "Opponent"]\n[Result "1-0"]\n[Link "${pgnLink}"]` }), matches, existingKeys);
+  assert.equal(evaluation.reason, "duplicate");
+  assert.ok(evaluation.duplicateKeys.includes(pgnLink));
+  assert.ok(evaluation.duplicateKeys.includes("999"));
+});
+
 test("resultForColor derives win draw loss from PGN result and player color", () => {
   assert.equal(resultForColor("1-0", "white"), "win");
   assert.equal(resultForColor("1-0", "black"), "loss");
@@ -83,7 +131,6 @@ test("executeImportPlan dry-run mode does not call writeCandidate", async () => 
   assert.equal(result.written, 0);
   assert.equal(writes, 0);
 });
-
 
 test('isImportEnabled only allows the exact string "true"', () => {
   assert.equal(isImportEnabled("true"), true);
@@ -111,7 +158,6 @@ test("shouldRecalculateContributions is disabled in dry-run and gated by RECALCU
   assert.equal(shouldRecalculateContributions(false, "TRUE"), false);
   assert.equal(shouldRecalculateContributions(false, undefined), false);
 });
-
 
 type TestCandidate = { tags: PgnTags };
 
