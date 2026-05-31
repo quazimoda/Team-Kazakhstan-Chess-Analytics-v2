@@ -7,6 +7,7 @@ import {
   bestSourceId,
   choosePythonCommand,
   evaluateCandidateEligibility,
+  collectImportCandidateUsernames,
   executeImportPlan,
   extractPgnTags,
   isImportEnabled,
@@ -14,11 +15,15 @@ import {
   normalizedGameKeys,
   parseEndTime,
   parseRating,
+  prepareImportPlayers,
   resultForColor,
   resultForTeamPlayer,
   scoreForResult,
+  validateImportCandidatePlayers,
   type CurrentMatchForImport,
   type OldSqliteGameRow,
+  type ImportPlayerCandidate,
+  type ImportPlayerRow,
   type PgnTags,
 } from "../src/lib/import/oldSqliteOfficial";
 
@@ -31,7 +36,8 @@ type ImportCandidate = {
   sourceId: string;
 };
 
-type PlayerRow = { id: number; username: string; is_team_member: number };
+type PlayerRow = ImportPlayerRow;
+type QuerySql = Sql | postgres.TransactionSql;
 
 type ParticipationAggregate = {
   matchId: number;
@@ -128,7 +134,7 @@ finally:
   if (code !== 0) throw new Error(`SQLite reader exited with code ${code}.`);
 }
 
-async function loadCurrentState(sql: Sql) {
+async function loadCurrentState(sql: QuerySql) {
   const matchRows = await sql<{
     id: number;
     chesscom_match_id: number;
@@ -173,7 +179,7 @@ async function loadCurrentState(sql: Sql) {
   return { matchesByChesscomId, existingGameKeys };
 }
 
-async function columnExists(sql: Sql, tableName: string, columnName: string) {
+async function columnExists(sql: QuerySql, tableName: string, columnName: string) {
   const rows = await sql<{ exists: boolean }[]>`
     select exists (
       select 1
@@ -186,22 +192,34 @@ async function columnExists(sql: Sql, tableName: string, columnName: string) {
   return rows[0]?.exists === true;
 }
 
-async function upsertPlayer(sql: Sql, username: string, rating: number | null, rawProfile: unknown) {
-  const normalized = username.trim();
-  const [existing] = await sql<PlayerRow[]>`
+async function loadPlayersByLowerUsernames(sql: QuerySql, lowerUsernames: string[]) {
+  if (lowerUsernames.length === 0) return [];
+  return sql<PlayerRow[]>`
     select id, username, is_team_member
     from players
-    where lower(username) = lower(${normalized})
-    limit 1
+    where lower(username) = any(${lowerUsernames})
   `;
-  if (existing) return existing;
+}
 
-  const [inserted] = await sql<PlayerRow[]>`
+async function insertMissingPlayers(sql: QuerySql, players: ImportPlayerCandidate[]) {
+  if (players.length === 0) return 0;
+  const values = players.flatMap((player) => [
+    player.username,
+    `https://www.chess.com/member/${encodeURIComponent(player.username)}`,
+    player.rating,
+    JSON.stringify(player.rawProfile),
+  ]);
+  const placeholders = players.map((_, index) => {
+    const start = index * 4;
+    return `($${start + 1}, $${start + 2}, $${start + 3}, $${start + 4}::jsonb, 'old_sqlite', now(), now(), now())`;
+  });
+  const inserted = await sql.unsafe<{ id: number }[]>(`
     insert into players (username, chesscom_url, current_rating, raw_profile, first_seen_source, last_seen_at, created_at, updated_at)
-    values (${normalized}, ${`https://www.chess.com/member/${encodeURIComponent(normalized)}`}, ${rating}, ${sql.json(rawProfile as any)}, 'old_sqlite', now(), now(), now())
-    returning id, username, is_team_member
-  `;
-  return inserted;
+    values ${placeholders.join(", ")}
+    on conflict do nothing
+    returning id
+  `, values as any[]);
+  return inserted.length;
 }
 
 function addParticipation(aggregates: Map<string, ParticipationAggregate>, candidate: ImportCandidate, player: PlayerRow, color: "white" | "black") {
@@ -237,9 +255,8 @@ function addParticipation(aggregates: Map<string, ParticipationAggregate>, candi
   return true;
 }
 
-async function importCandidate(sql: Sql, candidate: ImportCandidate, options: { supportsWhiteRating: boolean; supportsBlackRating: boolean; supportsResult: boolean }) {
-  const white = candidate.tags.white ? await upsertPlayer(sql, candidate.tags.white, parseRating(candidate.tags.whiteElo), { username: candidate.tags.white, source: "old_sqlite", color: "white" }) : null;
-  const black = candidate.tags.black ? await upsertPlayer(sql, candidate.tags.black, parseRating(candidate.tags.blackElo), { username: candidate.tags.black, source: "old_sqlite", color: "black" }) : null;
+async function importCandidate(sql: QuerySql, candidate: ImportCandidate, players: { white: PlayerRow; black: PlayerRow }, options: { supportsWhiteRating: boolean; supportsBlackRating: boolean; supportsResult: boolean }) {
+  const { white, black } = players;
   const rawGame = {
     source: "old_sqlite",
     url: candidate.sourceId,
@@ -277,7 +294,7 @@ async function importCandidate(sql: Sql, candidate: ImportCandidate, options: { 
   return { white, black };
 }
 
-async function upsertParticipations(sql: Sql, aggregates: Map<string, ParticipationAggregate>) {
+async function upsertParticipations(sql: QuerySql, aggregates: Map<string, ParticipationAggregate>) {
   for (const participation of aggregates.values()) {
     const avgOpponentRating = participation.avgOpponentRatingGames ? Math.round(participation.avgOpponentRatingTotal / participation.avgOpponentRatingGames) : null;
     await sql`
@@ -306,7 +323,7 @@ async function upsertParticipations(sql: Sql, aggregates: Map<string, Participat
   }
 }
 
-async function recalculateContributions(sql: Sql, leagueIds: number[]) {
+async function recalculateContributions(sql: QuerySql, leagueIds: number[]) {
   if (leagueIds.length === 0) return 0;
   await sql`delete from player_contributions where period = 'all' and league_id = any(${leagueIds})`;
   const inserted = await sql<{ count: number }[]>`
@@ -379,6 +396,7 @@ async function main() {
   const skippedDuplicates: Record<string, unknown>[] = [];
   const skippedUnmatched: Record<string, unknown>[] = [];
   const skippedNonOfficial: Record<string, unknown>[] = [];
+  const skippedMissingPlayers: Record<string, unknown>[] = [];
 
   const summary = {
     mode: dryRun ? "dry-run" : "import",
@@ -391,6 +409,9 @@ async function main() {
     skipped_non_official: 0,
     skipped_invalid_rules: 0,
     skipped_missing_source_id: 0,
+    skipped_missing_players: 0,
+    players_loaded: 0,
+    players_inserted: 0,
     players_upserted: 0,
     participations_upserted: 0,
     contributions_recalculated: 0 as number | null,
@@ -399,11 +420,8 @@ async function main() {
     recalculated_league_ids: [] as number[],
   };
 
-  try {
-    if (dryRun) await sql`begin read only`;
-    else await sql`begin`;
-
-    const { matchesByChesscomId, existingGameKeys } = await loadCurrentState(sql);
+  const runImport = async (tx: postgres.TransactionSql) => {
+    const { matchesByChesscomId, existingGameKeys } = await loadCurrentState(tx);
     const candidates: ImportCandidate[] = [];
 
     for await (const message of oldSqliteRows(sqlitePath)) {
@@ -442,28 +460,46 @@ async function main() {
     console.log("Old SQLite official import preflight summary:");
     console.log(JSON.stringify({ ...summary, candidate_games: candidates.length }, null, 2));
 
-    const supportsWhiteRating = await columnExists(sql, "games", "white_rating");
-    const supportsBlackRating = await columnExists(sql, "games", "black_rating");
-    const supportsResult = await columnExists(sql, "games", "result");
+    const supportsWhiteRating = await columnExists(tx, "games", "white_rating");
+    const supportsBlackRating = await columnExists(tx, "games", "black_rating");
+    const supportsResult = await columnExists(tx, "games", "result");
     const playerIds = new Set<number>();
     const importedLeagueIds = new Set<number>();
     const participationAggregates = new Map<string, ParticipationAggregate>();
+    const playerCandidates = collectImportCandidateUsernames(candidates);
+    const playerPreparation = await prepareImportPlayers(playerCandidates, {
+      loadByLowerUsernames: (lowerUsernames) => loadPlayersByLowerUsernames(tx, lowerUsernames),
+      insertMissingPlayers: (players) => (dryRun ? Promise.resolve(0) : insertMissingPlayers(tx, players)),
+    });
+    summary.players_loaded = playerPreparation.playersLoaded;
+    summary.players_inserted = playerPreparation.playersInserted;
 
     await executeImportPlan({
       dryRun,
       candidates,
       writeCandidate: async (candidate) => {
-        const players = await importCandidate(sql, candidate, { supportsWhiteRating, supportsBlackRating, supportsResult });
-        if (players.white) {
-          playerIds.add(players.white.id);
-          if (addParticipation(participationAggregates, candidate, players.white, "white")) {
-            // Participation is counted after aggregate upsert to avoid per-game double-counting.
-          }
+        const validation = validateImportCandidatePlayers(candidate, playerPreparation.playersByLowerUsername);
+        if (!validation.ok) {
+          summary.skipped_missing_players += 1;
+          skippedMissingPlayers.push({
+            source_id: candidate.sourceId,
+            old_game_url: candidate.row.game_url,
+            pgn_link: candidate.tags.link,
+            chesscom_match_id: candidate.tags.chesscomMatchId,
+            match_id: candidate.match.id,
+            white: candidate.tags.white,
+            black: candidate.tags.black,
+            missing: validation.missing.join(" | "),
+          });
+          return;
         }
-        if (players.black) {
-          playerIds.add(players.black.id);
-          addParticipation(participationAggregates, candidate, players.black, "black");
+        const players = await importCandidate(tx, candidate, { white: validation.white, black: validation.black }, { supportsWhiteRating, supportsBlackRating, supportsResult });
+        playerIds.add(players.white.id);
+        if (addParticipation(participationAggregates, candidate, players.white, "white")) {
+          // Participation is counted after aggregate upsert to avoid per-game double-counting.
         }
+        playerIds.add(players.black.id);
+        addParticipation(participationAggregates, candidate, players.black, "black");
         if (candidate.match.leagueId != null) importedLeagueIds.add(candidate.match.leagueId);
         summary.imported_games += 1;
         importedLogs.push(candidateLog(candidate, "imported"));
@@ -471,12 +507,12 @@ async function main() {
     });
 
     if (!dryRun) {
-      await upsertParticipations(sql, participationAggregates);
+      await upsertParticipations(tx, participationAggregates);
       summary.players_upserted = playerIds.size;
       summary.participations_upserted = participationAggregates.size;
       summary.recalculated_league_ids = [...importedLeagueIds].sort((a, b) => a - b);
       if (recalculateAfterImport) {
-        summary.contributions_recalculated = await recalculateContributions(sql, summary.recalculated_league_ids);
+        summary.contributions_recalculated = await recalculateContributions(tx, summary.recalculated_league_ids);
         summary.recalculation_required = false;
       } else {
         summary.contributions_recalculated = null;
@@ -485,21 +521,17 @@ async function main() {
     } else {
       summary.imported_games = 0;
       summary.players_upserted = 0;
+      summary.players_inserted = 0;
       summary.participations_upserted = 0;
       summary.contributions_recalculated = null;
       summary.recalculation_required = false;
       for (const candidate of candidates) importedLogs.push(candidateLog(candidate, "dry_run_candidate"));
     }
+  };
 
-    if (dryRun) await sql`rollback`;
-    else await sql`commit`;
-  } catch (error) {
-    try {
-      await sql`rollback`;
-    } catch {
-      // Preserve the original error.
-    }
-    throw error;
+  try {
+    if (dryRun) await sql.begin("read only", runImport);
+    else await sql.begin(runImport);
   } finally {
     await sql.end({ timeout: 5 });
   }
@@ -508,6 +540,7 @@ async function main() {
   writeCsv(`${outputDir}/skipped_duplicates.csv`, skippedDuplicates, ["old_game_url", "pgn_link", "duplicate_keys", "chesscom_match_id", "match_id"]);
   writeCsv(`${outputDir}/skipped_unmatched.csv`, skippedUnmatched, ["old_game_url", "pgn_link", "chesscom_match_id", "event"]);
   writeCsv(`${outputDir}/skipped_non_official.csv`, skippedNonOfficial, ["old_game_url", "pgn_link", "chesscom_match_id", "match_id", "is_official", "league_id"]);
+  writeCsv(`${outputDir}/skipped_missing_players.csv`, skippedMissingPlayers, ["source_id", "old_game_url", "pgn_link", "chesscom_match_id", "match_id", "white", "black", "missing"]);
   writeFileSync(`${outputDir}/import_summary.json`, `${JSON.stringify(summary, null, 2)}\n`);
 
   console.log("Old SQLite official import final summary:");
