@@ -5,6 +5,7 @@ import { once } from "node:events";
 import postgres, { type Sql } from "postgres";
 import {
   bestSourceId,
+  buildOldSqliteRawGame,
   choosePythonCommand,
   evaluateCandidateEligibility,
   collectImportCandidateUsernames,
@@ -13,6 +14,7 @@ import {
   isImportEnabled,
   shouldRecalculateContributions,
   normalizedGameKeys,
+  toOldSqliteRawGameJsonbParameter,
   parseEndTime,
   parseRating,
   prepareImportPlayers,
@@ -257,26 +259,10 @@ function addParticipation(aggregates: Map<string, ParticipationAggregate>, candi
 
 async function importCandidate(sql: QuerySql, candidate: ImportCandidate, players: { white: PlayerRow; black: PlayerRow }, options: { supportsWhiteRating: boolean; supportsBlackRating: boolean; supportsResult: boolean }) {
   const { white, black } = players;
-  const rawGame = {
-    source: "old_sqlite",
-    url: candidate.sourceId,
-    game_url: candidate.row.game_url,
-    link: candidate.tags.link,
-    old_game_url: candidate.row.game_url,
-    old_date: candidate.row.date,
-    old_time_class: candidate.row.time_class,
-    old_time_control: candidate.row.time_control,
-    old_rules: candidate.row.rules,
-    old_player: candidate.row.player,
-    old_opponent: candidate.row.opponent,
-    old_result: candidate.row.result,
-    is_tournament: candidate.row.is_tournament ?? null,
-    tournament_url: candidate.row.tournament_url ?? null,
-    pgn_tags: candidate.tags,
-  };
+  const rawGame = buildOldSqliteRawGame(candidate.row, candidate.tags, candidate.sourceId);
   const endTime = parseEndTime(candidate.tags);
   const columns = ["chesscom_game_uuid", "match_id", "white_player_id", "black_player_id", "time_class", "rated", "pgn", "end_time", "raw_game"];
-  const values: unknown[] = [candidate.sourceId, candidate.match.id, white?.id ?? null, black?.id ?? null, candidate.row.time_class, 1, candidate.row.pgn, endTime, JSON.stringify(rawGame)];
+  const values: unknown[] = [candidate.sourceId, candidate.match.id, white?.id ?? null, black?.id ?? null, candidate.row.time_class, 1, candidate.row.pgn, endTime, toOldSqliteRawGameJsonbParameter(rawGame, (value) => sql.json(value))];
   if (options.supportsResult) {
     columns.push("result");
     values.push(resultForTeamPlayer(candidate.tags.result, { whiteIsTeamMember: white?.is_team_member === 1, blackIsTeamMember: black?.is_team_member === 1 }));

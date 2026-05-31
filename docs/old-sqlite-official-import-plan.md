@@ -139,9 +139,26 @@ The importer intentionally does not seed, classify, or reclassify matches. Old g
 
 When `RECALCULATE_AFTER_IMPORT=true` is set during a real import, the importer recalculates only `player_contributions` rows with `period = 'all'` whose `league_id` is one of the official league ids touched by imported games. It deletes and rebuilds only those affected contribution rows from current `match_participations`; it does not delete contribution rows for unrelated leagues or null-league matches. If `RECALCULATE_AFTER_IMPORT` is omitted, the importer writes games/participations and prints the affected league ids so recalculation can be run separately through the existing admin recalculation workflow.
 
+### Repair old `raw_game` string rows
+
+If an earlier run stored old SQLite `raw_game` values as JSONB strings instead of JSONB objects, repair only those rows before using the verification queries:
+
+```sql
+update games
+set raw_game = (raw_game #>> '{}')::jsonb
+where jsonb_typeof(raw_game) = 'string'
+  and (raw_game #>> '{}') like '%"source":"old_sqlite"%';
+```
+
 ### Post-import verification SQL
 
 ```sql
+-- Confirm old SQLite raw_game values are JSONB objects, not JSONB strings.
+select jsonb_typeof(raw_game) as raw_game_type, count(*)
+from games
+where raw_game->>'source' = 'old_sqlite'
+group by raw_game_type;
+
 -- Imported old SQLite games by league.
 select l.slug, count(*) as imported_games
 from games g
