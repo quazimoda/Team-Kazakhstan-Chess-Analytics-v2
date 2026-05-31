@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   choosePythonCommand,
+  collectImportCandidateUsernames,
   evaluateCandidateEligibility,
   executeImportPlan,
   extractPgnTags,
@@ -9,10 +10,15 @@ import {
   isRecalculateEnabled,
   shouldRecalculateContributions,
   normalizedGameKeys,
+  prepareImportPlayers,
   resultForColor,
   resultForTeamPlayer,
+  validateImportCandidatePlayers,
   type CurrentMatchForImport,
+  type ImportPlayerCandidate,
+  type ImportPlayerRow,
   type OldSqliteGameRow,
+  type PgnTags,
 } from "./oldSqliteOfficial";
 
 function row(overrides: Partial<OldSqliteGameRow> = {}): OldSqliteGameRow {
@@ -104,4 +110,98 @@ test("shouldRecalculateContributions is disabled in dry-run and gated by RECALCU
   assert.equal(shouldRecalculateContributions(false, "true"), true);
   assert.equal(shouldRecalculateContributions(false, "TRUE"), false);
   assert.equal(shouldRecalculateContributions(false, undefined), false);
+});
+
+
+type TestCandidate = { tags: PgnTags };
+
+function candidateWithPlayers(white: string | null, black: string | null): TestCandidate {
+  const tags = extractPgnTags(row({
+    pgn: `[Event "Team Match"]\n[Match "https://www.chess.com/club/matches/12345"]\n[White "${white ?? ""}"]\n[Black "${black ?? ""}"]\n[Result "1-0"]\n[WhiteElo "2100"]\n[BlackElo "2000"]\n[Link "https://www.chess.com/game/daily/999"]`,
+  }).pgn)!;
+  return { tags: { ...tags, white, black } };
+}
+
+function memoryPlayerStore(initialPlayers: ImportPlayerRow[]) {
+  const players = new Map(initialPlayers.map((player) => [player.username.toLowerCase(), player]));
+  let nextId = 100;
+  const insertedNames: string[] = [];
+  return {
+    insertedNames,
+    loadByLowerUsernames: async (lowerUsernames: string[]) => lowerUsernames.flatMap((username) => players.get(username) ?? []),
+    insertMissingPlayers: async (missingPlayers: ImportPlayerCandidate[]) => {
+      for (const player of missingPlayers) {
+        const key = player.username.toLowerCase();
+        if (players.has(key)) continue;
+        insertedNames.push(player.username);
+        players.set(key, { id: nextId, username: player.username, is_team_member: 0 });
+        nextId += 1;
+      }
+      return insertedNames.length;
+    },
+  };
+}
+
+test("old SQLite player preparation reuses existing players and preserves team-member metadata", async () => {
+  const candidate = candidateWithPlayers("KazPlayer", "Opponent");
+  const store = memoryPlayerStore([{ id: 42, username: "kazplayer", is_team_member: 1 }]);
+
+  const prepared = await prepareImportPlayers(collectImportCandidateUsernames([candidate]), store);
+  const validation = validateImportCandidatePlayers(candidate, prepared.playersByLowerUsername);
+
+  assert.equal(prepared.playersLoaded, 2);
+  assert.equal(prepared.playersInserted, 1);
+  assert.deepEqual(store.insertedNames, ["Opponent"]);
+  assert.equal(validation.ok, true);
+  assert.equal(validation.white?.id, 42);
+  assert.equal(validation.white?.is_team_member, 1);
+});
+
+test("old SQLite player preparation uses newly inserted player ids for games", async () => {
+  const candidate = candidateWithPlayers("NewWhite", "NewBlack");
+  const store = memoryPlayerStore([]);
+
+  const prepared = await prepareImportPlayers(collectImportCandidateUsernames([candidate]), store);
+  const validation = validateImportCandidatePlayers(candidate, prepared.playersByLowerUsername);
+
+  assert.equal(prepared.playersLoaded, 2);
+  assert.equal(prepared.playersInserted, 2);
+  assert.equal(validation.ok, true);
+  assert.equal(validation.white?.id, 101);
+  assert.equal(validation.black?.id, 100);
+});
+
+test("old SQLite missing player candidate is skipped before game insertion", async () => {
+  const candidate = candidateWithPlayers("KazPlayer", "MissingOpponent");
+  const candidatesByUsername = collectImportCandidateUsernames([candidate]);
+  const prepared = await prepareImportPlayers(candidatesByUsername, {
+    loadByLowerUsernames: async (lowerUsernames) => lowerUsernames.includes("kazplayer") ? [{ id: 7, username: "KazPlayer", is_team_member: 1 }] : [],
+    insertMissingPlayers: async () => 0,
+  });
+  const validation = validateImportCandidatePlayers(candidate, prepared.playersByLowerUsername);
+
+  assert.equal(validation.ok, false);
+  assert.deepEqual(validation.missing, ["black_player:MissingOpponent"]);
+});
+
+test("old SQLite missing player does not call game insertion or throw a foreign-key error", async () => {
+  const candidate = candidateWithPlayers("KazPlayer", "MissingOpponent");
+  const prepared = await prepareImportPlayers(collectImportCandidateUsernames([candidate]), {
+    loadByLowerUsernames: async () => [{ id: 7, username: "KazPlayer", is_team_member: 1 }],
+    insertMissingPlayers: async () => 0,
+  });
+  let gameInsertions = 0;
+
+  await executeImportPlan({
+    dryRun: false,
+    candidates: [candidate],
+    writeCandidate: async (importCandidate) => {
+      const validation = validateImportCandidatePlayers(importCandidate, prepared.playersByLowerUsername);
+      if (!validation.ok) return;
+      gameInsertions += 1;
+      throw new Error("foreign key violation should not be reachable");
+    },
+  });
+
+  assert.equal(gameInsertions, 0);
 });

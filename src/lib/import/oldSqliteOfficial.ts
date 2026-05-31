@@ -49,6 +49,74 @@ export type GameResult = "win" | "draw" | "loss" | "unknown";
 
 export type PythonCommand = "python3" | "python";
 
+
+export type ImportPlayerRow = { id: number; username: string; is_team_member: number };
+
+export type ImportPlayerCandidate = {
+  username: string;
+  rating: number | null;
+  rawProfile: unknown;
+};
+
+export type PlayerPreparationStore = {
+  loadByLowerUsernames: (lowerUsernames: string[]) => Promise<ImportPlayerRow[]>;
+  insertMissingPlayers: (players: ImportPlayerCandidate[]) => Promise<number>;
+};
+
+export function normalizeImportUsername(username: string | null | undefined) {
+  const normalized = username?.trim();
+  return normalized ? normalized.toLowerCase() : null;
+}
+
+export function collectImportCandidateUsernames<T extends { tags: Pick<PgnTags, "white" | "black" | "whiteElo" | "blackElo"> }>(candidates: T[]) {
+  const players = new Map<string, ImportPlayerCandidate>();
+  for (const candidate of candidates) {
+    const sides = [
+      { username: candidate.tags.white, rating: parseRating(candidate.tags.whiteElo), color: "white" },
+      { username: candidate.tags.black, rating: parseRating(candidate.tags.blackElo), color: "black" },
+    ] as const;
+    for (const side of sides) {
+      const key = normalizeImportUsername(side.username);
+      const username = side.username?.trim();
+      if (!key || !username || players.has(key)) continue;
+      players.set(key, {
+        username,
+        rating: side.rating,
+        rawProfile: { username, source: "old_sqlite", color: side.color },
+      });
+    }
+  }
+  return players;
+}
+
+export async function prepareImportPlayers(candidatesByLowerUsername: Map<string, ImportPlayerCandidate>, store: PlayerPreparationStore) {
+  const lowerUsernames = [...candidatesByLowerUsername.keys()].sort();
+  const initialRows = await store.loadByLowerUsernames(lowerUsernames);
+  const initialMap = new Map(initialRows.map((player) => [normalizeImportUsername(player.username), player] as const).filter((entry): entry is [string, ImportPlayerRow] => entry[0] != null));
+  const missingPlayers = lowerUsernames.flatMap((username) => (initialMap.has(username) ? [] : [candidatesByLowerUsername.get(username)!]));
+  const playersInserted = missingPlayers.length > 0 ? await store.insertMissingPlayers(missingPlayers) : 0;
+  const finalRows = await store.loadByLowerUsernames(lowerUsernames);
+  const playersByLowerUsername = new Map(finalRows.map((player) => [normalizeImportUsername(player.username), player] as const).filter((entry): entry is [string, ImportPlayerRow] => entry[0] != null));
+  return {
+    playersByLowerUsername,
+    playersLoaded: finalRows.length,
+    playersInserted,
+  };
+}
+
+export function validateImportCandidatePlayers<T extends { tags: Pick<PgnTags, "white" | "black"> }>(candidate: T, playersByLowerUsername: Map<string, ImportPlayerRow>) {
+  const whiteUsername = normalizeImportUsername(candidate.tags.white);
+  const blackUsername = normalizeImportUsername(candidate.tags.black);
+  const missing: string[] = [];
+  const white = whiteUsername ? playersByLowerUsername.get(whiteUsername) ?? null : null;
+  const black = blackUsername ? playersByLowerUsername.get(blackUsername) ?? null : null;
+  if (!whiteUsername) missing.push("white_username");
+  else if (!white?.id) missing.push(`white_player:${candidate.tags.white}`);
+  if (!blackUsername) missing.push("black_username");
+  else if (!black?.id) missing.push(`black_player:${candidate.tags.black}`);
+  return missing.length === 0 ? { ok: true as const, white: white!, black: black!, missing } : { ok: false as const, white, black, missing };
+}
+
 export function choosePythonCommand(isCommandAvailable: (command: PythonCommand) => boolean): PythonCommand {
   if (isCommandAvailable("python3")) return "python3";
   if (isCommandAvailable("python")) return "python";
