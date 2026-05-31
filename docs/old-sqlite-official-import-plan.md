@@ -139,6 +139,31 @@ The importer intentionally does not seed, classify, or reclassify matches. Old g
 
 When `RECALCULATE_AFTER_IMPORT=true` is set during a real import, the importer recalculates only `player_contributions` rows with `period = 'all'` whose `league_id` is one of the official league ids touched by imported games. It deletes and rebuilds only those affected contribution rows from current `match_participations`; it does not delete contribution rows for unrelated leagues or null-league matches. If `RECALCULATE_AFTER_IMPORT` is omitted, the importer writes games/participations and prints the affected league ids so recalculation can be run separately through the existing admin recalculation workflow.
 
+## Recalculate contributions after successful import
+
+After the old SQLite games have already been imported, do **not** re-run the importer. Use the standalone recalculation script to rebuild only `player_contributions` rows where `period = 'all'` and `league_id` is one of the affected old SQLite official league ids `1,2,3,4,5,6,7,8`. The script derives the replacement rows from current `match_participations` joined to official `matches`, ignores null-league matches, and does not insert games or modify matches, players, or participations.
+
+Dry-run is the default and should be run first:
+
+```powershell
+npm run recalculate:old-sqlite-contributions
+```
+
+Real recalculation requires the exact write gate and runs in one PostgreSQL transaction:
+
+```powershell
+$env:RECALCULATE_OLD_SQLITE_CONTRIBUTIONS="true"
+npm run recalculate:old-sqlite-contributions
+```
+
+Clear the write gate after the real recalculation finishes:
+
+```powershell
+Remove-Item Env:RECALCULATE_OLD_SQLITE_CONTRIBUTIONS -ErrorAction SilentlyContinue
+```
+
+The script writes `old-db-import-output/recalculate_contributions_summary.json` and `old-db-import-output/recalculated_contributions_by_league.csv` for review.
+
 ### Repair old `raw_game` string rows
 
 If an earlier run stored old SQLite `raw_game` values as JSONB strings instead of JSONB objects, repair only those rows before using the verification queries:
