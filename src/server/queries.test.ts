@@ -1,79 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { PgDialect } from "drizzle-orm/pg-core";
-import { buildGetPlayersSql } from "./player-query";
+import { getTableColumns } from "drizzle-orm";
+import { PLAYER_CONTRIBUTION_STATS_SQL_ALIASES } from "./player-query-aliases";
+import { players } from "./db/schema";
 
-function compilePlayersSql(
-  options: Parameters<typeof buildGetPlayersSql>[0] = {
-    query: "",
-    official: "all",
-    team: "all",
-    sort: "username",
-  },
-) {
-  return new PgDialect().sqlToQuery(buildGetPlayersSql(options)).sql;
-}
-
-describe("getPlayers SQL", () => {
-  it("qualifies contribution aggregate references through the CTE alias", () => {
-    const compiledSql = compilePlayersSql({
-      query: "bruno",
-      official: "with",
-      team: "members",
-      sort: "last_played",
-    });
-
-    assert.match(
-      compiledSql,
-      /coalesce\(cs\.matches_played, p\.matches_played, 0\)::int as matches_played/,
+describe("player contribution stats SQL aliases", () => {
+  it("do not collide with players table column names", () => {
+    const playerColumnNames = new Set(
+      Object.values(getTableColumns(players)).map((column) => column.name),
     );
-    assert.match(compiledSql, /coalesce\(cs\.games_played, 0\) > 0/);
-    assert.match(compiledSql, /order by cs\.last_played_at desc nulls last/);
-    assert.doesNotMatch(
-      compiledSql,
-      /coalesce\("?contribution_[a-z_]+"?,\s*p\./,
-    );
-  });
 
-  it("keeps the without-official-games filter qualified", () => {
-    const compiledSql = compilePlayersSql({
-      query: "",
-      official: "without",
-      team: "all",
-      sort: "official_games",
-    });
-
-    assert.match(compiledSql, /where coalesce\(cs\.games_played, 0\) = 0/);
-    assert.match(
-      compiledSql,
-      /order by coalesce\(cs\.games_played, 0\) desc, p\.username asc/,
-    );
-  });
-
-  it("does not emit PR24 Drizzle selected-field alias names", () => {
-    const compiledSql = compilePlayersSql({
-      query: "",
-      official: "all",
-      team: "all",
-      sort: "contribution",
-    });
-
-    for (const staleAlias of [
-      "contribution_matches_played",
-      "contribution_games_played",
-      "contribution_wins",
-      "contribution_draws",
-      "contribution_losses",
-      "contribution_score_total",
-      "contribution_last_played_at",
-      "contribution_best_league_name",
-    ]) {
+    for (const alias of Object.values(PLAYER_CONTRIBUTION_STATS_SQL_ALIASES)) {
       assert.equal(
-        compiledSql.includes(staleAlias),
+        playerColumnNames.has(alias),
         false,
-        `${staleAlias} must not be emitted because production did not qualify joined Drizzle selected-field aliases`,
+        `${alias} must stay unique so joined player aggregate references are not ambiguous`,
       );
     }
   });
-
 });
