@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getLeaderboard, type LeaderboardSort } from "@/server/queries";
 
-const sortOptions = new Set(["contribution_score", "points", "win_rate", "games"]);
+const sortOptions = new Set([
+  "contribution_score",
+  "points",
+  "win_rate",
+  "games",
+]);
 
 function parseMinGames(value: string | null) {
   if (!value) return undefined;
@@ -10,7 +15,9 @@ function parseMinGames(value: string | null) {
 }
 
 function parseSort(value: string | null): LeaderboardSort | undefined {
-  return value && sortOptions.has(value) ? (value as LeaderboardSort) : undefined;
+  return value && sortOptions.has(value)
+    ? (value as LeaderboardSort)
+    : undefined;
 }
 
 export async function GET(request: NextRequest) {
@@ -20,6 +27,7 @@ export async function GET(request: NextRequest) {
     period: params.get("period") ?? undefined,
     minGames: parseMinGames(params.get("minGames")),
     sort: parseSort(params.get("sort")),
+    q: params.get("q") ?? undefined,
   });
 
   return NextResponse.json({
