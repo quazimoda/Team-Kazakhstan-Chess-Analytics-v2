@@ -58,6 +58,7 @@ npm run build
 npm run db:generate
 npm run db:migrate
 npm run db:studio
+npm run report:data-quality
 ```
 
 The CI workflow runs `npm ci`, `npm run typecheck`, `npm run lint`, `npm run test`, and `npm run build` on pushes and pull requests to `main`.
@@ -122,6 +123,16 @@ curl -X POST "$NEXT_PUBLIC_APP_URL/api/admin/recalculate" \
 ```
 
 This endpoint aggregates official match participation rows and rewrites player contribution rows for the `all` period. If match details have not been synced yet, there are no real participation rows to aggregate. The `/admin` page exposes **Sync Matches**, **Sync Match Details**, and **Recalculate** buttons that prompt for `ADMIN_SECRET` and call the real endpoints.
+
+## Post-import data quality report
+
+After importing official old SQLite games and recalculating historical contribution rows, generate a read-only quality report against PostgreSQL:
+
+```bash
+npm run report:data-quality
+```
+
+The report script requires `DATABASE_URL`, runs all database queries in a read-only transaction, prints a console summary, writes `old-db-import-output/data_quality_report.json`, and exports CSV review files for league coverage, top players, and suspicious rows.
 
 ## Vercel deployment
 
