@@ -13,7 +13,8 @@
     "test": "rm -rf .test-build && tsc -p tsconfig.test.json && find .test-build -name \"*.test.js\" -print0 | xargs -0 node --test",
     "audit:old-sqlite-official": "tsx scripts/audit-old-sqlite-official.ts",
     "import:old-sqlite-official": "tsx scripts/import-old-sqlite-official.ts",
-    "recalculate:old-sqlite-contributions": "tsx scripts/recalculate-old-sqlite-contributions.ts"
+    "recalculate:old-sqlite-contributions": "tsx scripts/recalculate-old-sqlite-contributions.ts",
+    "report:data-quality": "tsx scripts/report-data-quality.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",
