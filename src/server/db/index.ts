@@ -6,5 +6,13 @@ import * as schema from "./schema";
 const connectionString = env.DATABASE_URL;
 
 export const db = connectionString
-  ? drizzle(postgres(connectionString, { prepare: false }), { schema })
+  ? drizzle(
+      postgres(connectionString, {
+        prepare: false,
+        max: 1,
+        connect_timeout: 10,
+        idle_timeout: 20,
+      }),
+      { schema },
+    )
   : null;
