@@ -238,7 +238,10 @@ export async function getPlayers(
                 asc(players.username),
               ]
             : sort === "last_played"
-              ? [desc(contributionStats.lastPlayedAt), asc(players.username)]
+              ? [
+                  sql`${contributionStats.lastPlayedAt} desc nulls last`,
+                  asc(players.username),
+                ]
               : [asc(players.username)];
 
     const rows = await db
@@ -830,7 +833,10 @@ export async function getTeamSummary(): Promise<ApiResponse<TeamSummary>> {
         contributionRows: Number(contributionRowsRow?.count ?? 0),
         earliestGameDate: toIso(gameDatesRow?.earliestGameDate),
         latestGameDate: toIso(gameDatesRow?.latestGameDate),
-        lastSync: jobsResult.data[0] ?? null,
+        lastSync:
+          jobsResult.source === "database"
+            ? (jobsResult.data[0] ?? null)
+            : null,
       },
     };
   } catch (error) {
