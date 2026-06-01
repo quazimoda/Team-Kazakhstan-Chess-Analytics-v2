@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
+import { PLAYER_CONTRIBUTION_STATS_SQL_ALIASES } from "@/server/player-query-aliases";
 import {
   games,
   leagues,
@@ -172,7 +173,8 @@ export async function getPlayers(
         return a.username.localeCompare(b.username);
       });
 
-  if (!db) return { data: filterDemoRows(demoPlayers), source: "demo" };
+  if (!db || isExplicitDemoMode())
+    return { data: filterDemoRows(demoPlayers), source: "demo" };
 
   try {
     const contributionStats = db
@@ -180,33 +182,33 @@ export async function getPlayers(
         playerId: playerContributions.playerId,
         matchesPlayed:
           sql<number>`coalesce(sum(${playerContributions.matchesPlayed}), 0)`.as(
-            "matches_played",
+            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.matchesPlayed,
           ),
         gamesPlayed:
           sql<number>`coalesce(sum(${playerContributions.gamesPlayed}), 0)`.as(
-            "games_played",
+            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.gamesPlayed,
           ),
         wins: sql<number>`coalesce(sum(${playerContributions.wins}), 0)`.as(
-          "wins",
+          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.wins,
         ),
         draws: sql<number>`coalesce(sum(${playerContributions.draws}), 0)`.as(
-          "draws",
+          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.draws,
         ),
         losses: sql<number>`coalesce(sum(${playerContributions.losses}), 0)`.as(
-          "losses",
+          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.losses,
         ),
         contributionScore:
           sql<number>`coalesce(sum(${playerContributions.contributionScore}), 0)`.as(
-            "contribution_score",
+            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.contributionScore,
           ),
         lastPlayedAt:
           sql<Date | null>`max(${playerContributions.lastPlayedAt})`.as(
-            "last_played_at",
+            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.lastPlayedAt,
           ),
         bestLeagueName: sql<
           string | null
         >`max(${leagues.name}) filter (where ${playerContributions.gamesPlayed} > 0)`.as(
-          "best_league_name",
+          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.bestLeagueName,
         ),
       })
       .from(playerContributions)
@@ -277,8 +279,6 @@ export async function getPlayers(
       .orderBy(...orderBy)
       .limit(500);
 
-    if (rows.length === 0 && !query && official === "all" && team === "all")
-      return { data: demoPlayers, source: "demo" };
     return {
       source: "database",
       data: rows.map((row: any) => ({
@@ -303,8 +303,9 @@ export async function getPlayers(
       })),
     };
   } catch (error) {
-    logReadFallback("getPlayers", error);
-    return { data: filterDemoRows(demoPlayers), source: "demo" };
+    const readError = describeReadError(error);
+    logReadError("getPlayers", error);
+    return { data: [], source: "database", readError };
   }
 }
 
