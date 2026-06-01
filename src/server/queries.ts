@@ -1,7 +1,7 @@
-import { and, asc, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
-import { PLAYER_CONTRIBUTION_STATS_SQL_ALIASES } from "@/server/player-query-aliases";
+import { buildGetPlayersSql, type GetPlayersSqlRow } from "@/server/player-query";
 import {
   games,
   leagues,
@@ -177,111 +177,13 @@ export async function getPlayers(
     return { data: filterDemoRows(demoPlayers), source: "demo" };
 
   try {
-    const contributionStats = db
-      .select({
-        playerId: playerContributions.playerId,
-        matchesPlayed:
-          sql<number>`coalesce(sum(${playerContributions.matchesPlayed}), 0)`.as(
-            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.matchesPlayed,
-          ),
-        gamesPlayed:
-          sql<number>`coalesce(sum(${playerContributions.gamesPlayed}), 0)`.as(
-            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.gamesPlayed,
-          ),
-        wins: sql<number>`coalesce(sum(${playerContributions.wins}), 0)`.as(
-          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.wins,
-        ),
-        draws: sql<number>`coalesce(sum(${playerContributions.draws}), 0)`.as(
-          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.draws,
-        ),
-        losses: sql<number>`coalesce(sum(${playerContributions.losses}), 0)`.as(
-          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.losses,
-        ),
-        contributionScore:
-          sql<number>`coalesce(sum(${playerContributions.contributionScore}), 0)`.as(
-            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.contributionScore,
-          ),
-        lastPlayedAt:
-          sql<Date | null>`max(${playerContributions.lastPlayedAt})`.as(
-            PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.lastPlayedAt,
-          ),
-        bestLeagueName: sql<
-          string | null
-        >`max(${leagues.name}) filter (where ${playerContributions.gamesPlayed} > 0)`.as(
-          PLAYER_CONTRIBUTION_STATS_SQL_ALIASES.bestLeagueName,
-        ),
-      })
-      .from(playerContributions)
-      .leftJoin(leagues, eq(playerContributions.leagueId, leagues.id))
-      .where(eq(playerContributions.period, "all"))
-      .groupBy(playerContributions.playerId)
-      .as("contribution_stats");
-
-    const conditions: SQL[] = [];
-    if (query)
-      conditions.push(sql`lower(${players.username}) like ${`%${query}%`}`);
-    if (team === "members") conditions.push(eq(players.isTeamMember, 1));
-    if (official === "with")
-      conditions.push(sql`coalesce(${contributionStats.gamesPlayed}, 0) > 0`);
-    if (official === "without")
-      conditions.push(sql`coalesce(${contributionStats.gamesPlayed}, 0) = 0`);
-
-    const orderBy =
-      sort === "rating"
-        ? [desc(players.currentRating), asc(players.username)]
-        : sort === "official_games"
-          ? [
-              desc(sql`coalesce(${contributionStats.gamesPlayed}, 0)`),
-              asc(players.username),
-            ]
-          : sort === "contribution"
-            ? [
-                desc(sql`coalesce(${contributionStats.contributionScore}, 0)`),
-                asc(players.username),
-              ]
-            : sort === "last_played"
-              ? [
-                  sql`${contributionStats.lastPlayedAt} desc nulls last`,
-                  asc(players.username),
-                ]
-              : [asc(players.username)];
-
-    const rows = await db
-      .select({
-        id: players.id,
-        username: players.username,
-        name: players.name,
-        title: players.title,
-        country: players.country,
-        avatarUrl: players.avatarUrl,
-        chesscomUrl: players.chesscomUrl,
-        currentRating: players.currentRating,
-        isTeamMember: players.isTeamMember,
-        lastSeenAt: players.lastSeenAt,
-        matchesPlayed: sql<number>`coalesce(${contributionStats.matchesPlayed}, ${players.matchesPlayed}, 0)`,
-        gamesPlayed: sql<number>`coalesce(${contributionStats.gamesPlayed}, ${players.gamesPlayed}, 0)`,
-        wins: sql<number>`coalesce(${contributionStats.wins}, ${players.wins}, 0)`,
-        draws: sql<number>`coalesce(${contributionStats.draws}, ${players.draws}, 0)`,
-        losses: sql<number>`coalesce(${contributionStats.losses}, ${players.losses}, 0)`,
-        contributionScore: sql<number>`coalesce(${contributionStats.contributionScore}, ${players.contributionScore}, 0)`,
-        bestLeagueName: contributionStats.bestLeagueName,
-        lastPlayedAt: contributionStats.lastPlayedAt,
-      })
-      .from(players)
-      .leftJoin(contributionStats, eq(contributionStats.playerId, players.id))
-      .where(
-        conditions.length
-          ? conditions.length === 1
-            ? conditions[0]
-            : and(...conditions)
-          : undefined,
-      )
-      .orderBy(...orderBy)
-      .limit(500);
+    const rows = await db.execute<GetPlayersSqlRow>(
+      buildGetPlayersSql({ q: query, official, team, sort }),
+    );
 
     return {
       source: "database",
-      data: rows.map((row: any) => ({
+      data: rows.map((row) => ({
         id: String(row.id),
         username: row.username,
         name: row.name,
