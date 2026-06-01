@@ -230,7 +230,7 @@ export function PlayersTable({ rows }: { rows: Player[] }) {
     return (
       <Card className="text-center">
         <p className="text-lg font-semibold text-white">
-          No players match these filters
+          No players match these filters.
         </p>
         <p className="mt-2 text-sm text-slate-400">
           Try a broader username search or switch back to all players.
