@@ -53,6 +53,17 @@ export default async function PlayersPage({ searchParams }: PlayersPageProps) {
         title="Players"
         description="Search Team Kazakhstan usernames and review profile fields alongside official contribution aggregates."
       />
+      {players.source === "demo" ? (
+        <div className="mb-6 rounded-2xl border border-yellow-300/30 bg-yellow-300/10 p-4 text-sm font-medium text-yellow-100">
+          Demo player data is being shown because the database is not configured
+          or demo mode is enabled.
+        </div>
+      ) : null}
+      {players.readError ? (
+        <div className="mb-6 rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-sm font-medium text-red-100">
+          Database read failed. Check Vercel runtime logs.
+        </div>
+      ) : null}
       <Card className="mb-6">
         <form className="grid gap-4 md:grid-cols-[1.4fr_1fr_1fr_1fr_auto] md:items-end">
           <label className="text-sm text-slate-300">
@@ -114,7 +125,7 @@ export default async function PlayersPage({ searchParams }: PlayersPageProps) {
           </button>
         </form>
       </Card>
-      <PlayersTable rows={players.data} />
+      {players.readError ? null : <PlayersTable rows={players.data} />}
     </>
   );
 }
