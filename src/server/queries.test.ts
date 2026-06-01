@@ -49,4 +49,31 @@ describe("getPlayers SQL", () => {
       /order by coalesce\(cs\.games_played, 0\) desc, p\.username asc/,
     );
   });
+
+  it("does not emit PR24 Drizzle selected-field alias names", () => {
+    const compiledSql = compilePlayersSql({
+      query: "",
+      official: "all",
+      team: "all",
+      sort: "contribution",
+    });
+
+    for (const staleAlias of [
+      "contribution_matches_played",
+      "contribution_games_played",
+      "contribution_wins",
+      "contribution_draws",
+      "contribution_losses",
+      "contribution_score_total",
+      "contribution_last_played_at",
+      "contribution_best_league_name",
+    ]) {
+      assert.equal(
+        compiledSql.includes(staleAlias),
+        false,
+        `${staleAlias} must not be emitted because production did not qualify joined Drizzle selected-field aliases`,
+      );
+    }
+  });
+
 });
