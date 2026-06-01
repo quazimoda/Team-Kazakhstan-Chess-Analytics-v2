@@ -180,6 +180,8 @@ export async function getPlayers(
     return { data: filterDemoRows(demoPlayers), source: "demo" };
 
   try {
+    // Keep this path on the raw SQL CTE builder so aggregate columns are
+    // explicitly qualified as cs.* instead of Drizzle selected-field aliases.
     const rows = await db.execute<GetPlayersQueryRow>(
       buildGetPlayersSql({ query, official, team, sort }),
     );
