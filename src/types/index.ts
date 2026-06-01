@@ -13,6 +13,9 @@ export type Player = {
   draws: number;
   losses: number;
   contributionScore: number;
+  bestLeagueName?: string | null;
+  lastPlayedAt?: string | null;
+  isTeamMember?: boolean;
   lastSeenAt: string | null;
 };
 
@@ -47,6 +50,8 @@ export type Match = {
   leagueSlug?: string | null;
   leagueName?: string | null;
   isOfficialCandidate?: boolean;
+  chesscomUrl?: string | null;
+  opponentUrl?: string | null;
 };
 
 export type MatchParticipation = {
@@ -111,6 +116,11 @@ export type TeamSummary = {
   matches: number;
   activeLeagues: number;
   games: number;
+  oldArchiveGames: number;
+  officialMatches: number;
+  contributionRows: number;
+  earliestGameDate: string | null;
+  latestGameDate: string | null;
   lastSync: SyncJob | null;
 };
 

@@ -1,11 +1,36 @@
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
-import { games, leagues, matches, matchParticipations, playerContributions, players, syncJobs } from "@/server/db/schema";
+import {
+  games,
+  leagues,
+  matches,
+  matchParticipations,
+  playerContributions,
+  players,
+  syncJobs,
+} from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { toIsoOrNull } from "@/lib/dates";
-import { demoLeaderboard, demoLeagues, demoMatches, demoPlayers, demoSummary, demoSyncJobs } from "@/lib/demo-data";
-import type { ApiResponse, LeaderboardRow, League, Match, MatchGame, MatchParticipation, Player, SyncJob, TeamSummary } from "@/types";
+import {
+  demoLeaderboard,
+  demoLeagues,
+  demoMatches,
+  demoPlayers,
+  demoSummary,
+  demoSyncJobs,
+} from "@/lib/demo-data";
+import type {
+  ApiResponse,
+  LeaderboardRow,
+  League,
+  Match,
+  MatchGame,
+  MatchParticipation,
+  Player,
+  SyncJob,
+  TeamSummary,
+} from "@/types";
 
 const toIso = toIsoOrNull;
 
@@ -22,10 +47,27 @@ function sanitizeReadErrorValue(value: unknown) {
 
 export function describeReadError(error: unknown) {
   if (error && typeof error === "object") {
-    const maybeDbError = error as { code?: unknown; message?: unknown; cause?: unknown };
-    const cause = maybeDbError.cause && typeof maybeDbError.cause === "object" ? maybeDbError.cause as { code?: unknown; message?: unknown } : null;
-    const code = typeof maybeDbError.code === "string" ? maybeDbError.code : typeof cause?.code === "string" ? cause.code : undefined;
-    const message = typeof maybeDbError.message === "string" ? maybeDbError.message : typeof cause?.message === "string" ? cause.message : String(error);
+    const maybeDbError = error as {
+      code?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    const cause =
+      maybeDbError.cause && typeof maybeDbError.cause === "object"
+        ? (maybeDbError.cause as { code?: unknown; message?: unknown })
+        : null;
+    const code =
+      typeof maybeDbError.code === "string"
+        ? maybeDbError.code
+        : typeof cause?.code === "string"
+          ? cause.code
+          : undefined;
+    const message =
+      typeof maybeDbError.message === "string"
+        ? maybeDbError.message
+        : typeof cause?.message === "string"
+          ? cause.message
+          : String(error);
 
     return {
       code: code?.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80),
@@ -37,67 +79,310 @@ export function describeReadError(error: unknown) {
 }
 
 function logReadFallback(queryName: string, error: unknown) {
-  console.error(`[server/queries] ${queryName} read failed; returning demo fallback data.`, describeReadError(error));
+  console.error(
+    `[server/queries] ${queryName} read failed; returning demo fallback data.`,
+    describeReadError(error),
+  );
 }
 
 function logReadError(queryName: string, error: unknown) {
-  console.error(`[server/queries] ${queryName} read failed.`, { queryName, ...describeReadError(error) });
+  console.error(`[server/queries] ${queryName} read failed.`, {
+    queryName,
+    ...describeReadError(error),
+  });
 }
 
 function isExplicitDemoMode() {
-  return process.env.DEMO_MODE === "true" || process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+  return (
+    process.env.DEMO_MODE === "true" ||
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true"
+  );
 }
 
-export async function getPlayers(): Promise<ApiResponse<Player[]>> {
-  if (!db) return { data: demoPlayers, source: "demo" };
+export type PlayerFilters = {
+  q?: string;
+  official?: "all" | "with" | "without";
+  team?: "all" | "members";
+  sort?:
+    | "username"
+    | "rating"
+    | "official_games"
+    | "contribution"
+    | "last_played";
+};
+
+function normalizePlayerSort(
+  sort: string | undefined,
+): NonNullable<PlayerFilters["sort"]> {
+  if (
+    sort === "rating" ||
+    sort === "official_games" ||
+    sort === "contribution" ||
+    sort === "last_played"
+  )
+    return sort;
+  return "username";
+}
+
+export async function getPlayers(
+  filters: PlayerFilters = {},
+): Promise<ApiResponse<Player[]>> {
+  const query = filters.q?.trim().toLowerCase() ?? "";
+  const official = filters.official ?? "all";
+  const team = filters.team ?? "all";
+  const sort = normalizePlayerSort(filters.sort);
+
+  const filterDemoRows = (rows: Player[]) =>
+    rows
+      .filter(
+        (player) => !query || player.username.toLowerCase().includes(query),
+      )
+      .filter((player) =>
+        official === "with"
+          ? player.gamesPlayed > 0
+          : official === "without"
+            ? player.gamesPlayed === 0
+            : true,
+      )
+      .filter((player) =>
+        team === "members" ? Boolean(player.isTeamMember) : true,
+      )
+      .sort((a, b) => {
+        if (sort === "rating")
+          return (
+            (b.currentRating ?? -1) - (a.currentRating ?? -1) ||
+            a.username.localeCompare(b.username)
+          );
+        if (sort === "official_games")
+          return (
+            b.gamesPlayed - a.gamesPlayed ||
+            a.username.localeCompare(b.username)
+          );
+        if (sort === "contribution")
+          return (
+            b.contributionScore - a.contributionScore ||
+            a.username.localeCompare(b.username)
+          );
+        if (sort === "last_played")
+          return (
+            (Date.parse(b.lastPlayedAt ?? "") || 0) -
+              (Date.parse(a.lastPlayedAt ?? "") || 0) ||
+            a.username.localeCompare(b.username)
+          );
+        return a.username.localeCompare(b.username);
+      });
+
+  if (!db) return { data: filterDemoRows(demoPlayers), source: "demo" };
 
   try {
-    const rows = await db.select().from(players).limit(100);
-    if (rows.length === 0) return { data: demoPlayers, source: "demo" };
+    const contributionStats = db
+      .select({
+        playerId: playerContributions.playerId,
+        matchesPlayed:
+          sql<number>`coalesce(sum(${playerContributions.matchesPlayed}), 0)`.as(
+            "matches_played",
+          ),
+        gamesPlayed:
+          sql<number>`coalesce(sum(${playerContributions.gamesPlayed}), 0)`.as(
+            "games_played",
+          ),
+        wins: sql<number>`coalesce(sum(${playerContributions.wins}), 0)`.as(
+          "wins",
+        ),
+        draws: sql<number>`coalesce(sum(${playerContributions.draws}), 0)`.as(
+          "draws",
+        ),
+        losses: sql<number>`coalesce(sum(${playerContributions.losses}), 0)`.as(
+          "losses",
+        ),
+        contributionScore:
+          sql<number>`coalesce(sum(${playerContributions.contributionScore}), 0)`.as(
+            "contribution_score",
+          ),
+        lastPlayedAt:
+          sql<Date | null>`max(${playerContributions.lastPlayedAt})`.as(
+            "last_played_at",
+          ),
+        bestLeagueName: sql<
+          string | null
+        >`max(${leagues.name}) filter (where ${playerContributions.gamesPlayed} > 0)`.as(
+          "best_league_name",
+        ),
+      })
+      .from(playerContributions)
+      .leftJoin(leagues, eq(playerContributions.leagueId, leagues.id))
+      .where(eq(playerContributions.period, "all"))
+      .groupBy(playerContributions.playerId)
+      .as("contribution_stats");
+
+    const conditions: SQL[] = [];
+    if (query)
+      conditions.push(sql`lower(${players.username}) like ${`%${query}%`}`);
+    if (team === "members") conditions.push(eq(players.isTeamMember, 1));
+    if (official === "with")
+      conditions.push(sql`coalesce(${contributionStats.gamesPlayed}, 0) > 0`);
+    if (official === "without")
+      conditions.push(sql`coalesce(${contributionStats.gamesPlayed}, 0) = 0`);
+
+    const orderBy =
+      sort === "rating"
+        ? [desc(players.currentRating), asc(players.username)]
+        : sort === "official_games"
+          ? [
+              desc(sql`coalesce(${contributionStats.gamesPlayed}, 0)`),
+              asc(players.username),
+            ]
+          : sort === "contribution"
+            ? [
+                desc(sql`coalesce(${contributionStats.contributionScore}, 0)`),
+                asc(players.username),
+              ]
+            : sort === "last_played"
+              ? [
+                  sql`${contributionStats.lastPlayedAt} desc nulls last`,
+                  asc(players.username),
+                ]
+              : [asc(players.username)];
+
+    const rows = await db
+      .select({
+        id: players.id,
+        username: players.username,
+        name: players.name,
+        title: players.title,
+        country: players.country,
+        avatarUrl: players.avatarUrl,
+        chesscomUrl: players.chesscomUrl,
+        currentRating: players.currentRating,
+        isTeamMember: players.isTeamMember,
+        lastSeenAt: players.lastSeenAt,
+        matchesPlayed: sql<number>`coalesce(${contributionStats.matchesPlayed}, ${players.matchesPlayed}, 0)`,
+        gamesPlayed: sql<number>`coalesce(${contributionStats.gamesPlayed}, ${players.gamesPlayed}, 0)`,
+        wins: sql<number>`coalesce(${contributionStats.wins}, ${players.wins}, 0)`,
+        draws: sql<number>`coalesce(${contributionStats.draws}, ${players.draws}, 0)`,
+        losses: sql<number>`coalesce(${contributionStats.losses}, ${players.losses}, 0)`,
+        contributionScore: sql<number>`coalesce(${contributionStats.contributionScore}, ${players.contributionScore}, 0)`,
+        bestLeagueName: contributionStats.bestLeagueName,
+        lastPlayedAt: contributionStats.lastPlayedAt,
+      })
+      .from(players)
+      .leftJoin(contributionStats, eq(contributionStats.playerId, players.id))
+      .where(
+        conditions.length
+          ? conditions.length === 1
+            ? conditions[0]
+            : and(...conditions)
+          : undefined,
+      )
+      .orderBy(...orderBy)
+      .limit(500);
+
+    if (rows.length === 0 && !query && official === "all" && team === "all")
+      return { data: demoPlayers, source: "demo" };
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.id), username: row.username, name: row.name, title: row.title, country: row.country, avatarUrl: row.avatarUrl, chesscomUrl: row.chesscomUrl, currentRating: row.currentRating, matchesPlayed: row.matchesPlayed, gamesPlayed: row.gamesPlayed, wins: row.wins, draws: row.draws, losses: row.losses, contributionScore: Number(row.contributionScore), lastSeenAt: toIso(row.lastSeenAt) })),
+      data: rows.map((row: any) => ({
+        id: String(row.id),
+        username: row.username,
+        name: row.name,
+        title: row.title,
+        country: row.country,
+        avatarUrl: row.avatarUrl,
+        chesscomUrl: row.chesscomUrl,
+        currentRating: row.currentRating,
+        matchesPlayed: Number(row.matchesPlayed),
+        gamesPlayed: Number(row.gamesPlayed),
+        wins: Number(row.wins),
+        draws: Number(row.draws),
+        losses: Number(row.losses),
+        contributionScore: Number(row.contributionScore),
+        bestLeagueName: row.bestLeagueName,
+        lastPlayedAt: toIso(row.lastPlayedAt),
+        isTeamMember: Boolean(row.isTeamMember),
+        lastSeenAt: toIso(row.lastSeenAt),
+      })),
     };
   } catch (error) {
     logReadFallback("getPlayers", error);
-    return { data: demoPlayers, source: "demo" };
+    return { data: filterDemoRows(demoPlayers), source: "demo" };
   }
 }
 
-export type MatchFilters = { official?: "official" | "all"; league?: string; month?: string };
+export type MatchFilters = {
+  official?: "official" | "all";
+  league?: string;
+  month?: string;
+};
 
-export async function getMatches(filters: MatchFilters = {}): Promise<ApiResponse<Match[]>> {
+export async function getMatches(
+  filters: MatchFilters = {},
+): Promise<ApiResponse<Match[]>> {
   const isOfficialOnly = filters.official === "official";
-  const selectedLeague = filters.league && filters.league !== "all" ? filters.league : null;
-  const selectedMonth = filters.month && /^\d{4}-\d{2}$/.test(filters.month) ? filters.month : null;
-  const applyFilters = (rows: Match[]) => rows.filter((match) => {
-    const classification = classifyLeague(match.name);
-    const leagueSlug = match.leagueSlug ?? classification.leagueSlug;
-    if (isOfficialOnly && !classification.isOfficialCandidate) return false;
-    if (selectedLeague && leagueSlug !== selectedLeague) return false;
-    if (selectedMonth && match.startsAt?.slice(0, 7) !== selectedMonth) return false;
-    return true;
-  });
+  const selectedLeague =
+    filters.league && filters.league !== "all" ? filters.league : null;
+  const selectedMonth =
+    filters.month && /^\d{4}-\d{2}$/.test(filters.month) ? filters.month : null;
+  const applyFilters = (rows: Match[]) =>
+    rows.filter((match) => {
+      const classification = classifyLeague(match.name);
+      const leagueSlug = match.leagueSlug ?? classification.leagueSlug;
+      if (isOfficialOnly && !classification.isOfficialCandidate) return false;
+      if (selectedLeague && leagueSlug !== selectedLeague) return false;
+      if (selectedMonth && match.startsAt?.slice(0, 7) !== selectedMonth)
+        return false;
+      return true;
+    });
 
   if (!db) return { data: applyFilters(demoMatches), source: "demo" };
 
   const conditions: SQL[] = [];
   if (selectedLeague) conditions.push(eq(leagues.slug, selectedLeague));
   if (isOfficialOnly) conditions.push(eq(matches.isOfficial, 1));
-  if (selectedMonth) conditions.push(sql`to_char(${matches.startsAt}, ${"YYYY-MM"}) = ${selectedMonth}`);
+  if (selectedMonth)
+    conditions.push(
+      sql`to_char(${matches.startsAt}, ${"YYYY-MM"}) = ${selectedMonth}`,
+    );
 
   try {
     const rows = await db
       .select({ match: matches, league: leagues })
       .from(matches)
       .leftJoin(leagues, eq(matches.leagueId, leagues.id))
-      .where(conditions.length ? (conditions.length === 1 ? conditions[0] : and(...conditions)) : undefined)
+      .where(
+        conditions.length
+          ? conditions.length === 1
+            ? conditions[0]
+            : and(...conditions)
+          : undefined,
+      )
       .orderBy(desc(matches.startsAt))
       .limit(100);
-    if (rows.length === 0) return { data: applyFilters(demoMatches), source: "demo" };
+    if (rows.length === 0)
+      return { data: applyFilters(demoMatches), source: "demo" };
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.match.id), chesscomMatchId: row.match.chesscomMatchId, leagueId: row.match.leagueId ? String(row.match.leagueId) : null, name: row.match.name, opponent: row.match.opponent, status: row.match.status, result: row.match.result, teamScore: toNumber(row.match.teamScore), opponentScore: toNumber(row.match.opponentScore), boardCount: row.match.boardCount, startsAt: toIso(row.match.startsAt), endsAt: toIso(row.match.endsAt), leagueSlug: row.league?.slug ?? classifyLeague(row.match.name).leagueSlug, leagueName: row.league?.name ?? null, isOfficialCandidate: Boolean(row.match.isOfficial) })),
+      data: rows.map((row: any) => ({
+        id: String(row.match.id),
+        chesscomMatchId: row.match.chesscomMatchId,
+        leagueId: row.match.leagueId ? String(row.match.leagueId) : null,
+        name: row.match.name,
+        opponent: row.match.opponent,
+        status: row.match.status,
+        result: row.match.result,
+        teamScore: toNumber(row.match.teamScore),
+        opponentScore: toNumber(row.match.opponentScore),
+        boardCount: row.match.boardCount,
+        startsAt: toIso(row.match.startsAt),
+        endsAt: toIso(row.match.endsAt),
+        leagueSlug:
+          row.league?.slug ?? classifyLeague(row.match.name).leagueSlug,
+        leagueName: row.league?.name ?? null,
+        isOfficialCandidate: Boolean(row.match.isOfficial),
+        chesscomUrl: row.match.chesscomUrl,
+        opponentUrl: /^https?:\/\//i.test(row.match.opponent ?? "")
+          ? row.match.opponent
+          : null,
+      })),
     };
   } catch (error) {
     logReadFallback("getMatches", error);
@@ -105,8 +390,14 @@ export async function getMatches(filters: MatchFilters = {}): Promise<ApiRespons
   }
 }
 
-export async function getMatchById(id: number): Promise<ApiResponse<Match | null>> {
-  if (!db) return { data: demoMatches.find((match) => Number(match.id) === id) ?? null, source: "demo" };
+export async function getMatchById(
+  id: number,
+): Promise<ApiResponse<Match | null>> {
+  if (!db)
+    return {
+      data: demoMatches.find((match) => Number(match.id) === id) ?? null,
+      source: "demo",
+    };
 
   try {
     const [row] = await db
@@ -118,15 +409,41 @@ export async function getMatchById(id: number): Promise<ApiResponse<Match | null
     if (!row) return { data: null, source: "database" };
     return {
       source: "database",
-      data: { id: String(row.match.id), chesscomMatchId: row.match.chesscomMatchId, leagueId: row.match.leagueId ? String(row.match.leagueId) : null, name: row.match.name, opponent: row.match.opponent, status: row.match.status, result: row.match.result, teamScore: toNumber(row.match.teamScore), opponentScore: toNumber(row.match.opponentScore), boardCount: row.match.boardCount, startsAt: toIso(row.match.startsAt), endsAt: toIso(row.match.endsAt), leagueSlug: row.league?.slug ?? classifyLeague(row.match.name).leagueSlug, leagueName: row.league?.name ?? null, isOfficialCandidate: Boolean(row.match.isOfficial) },
+      data: {
+        id: String(row.match.id),
+        chesscomMatchId: row.match.chesscomMatchId,
+        leagueId: row.match.leagueId ? String(row.match.leagueId) : null,
+        name: row.match.name,
+        opponent: row.match.opponent,
+        status: row.match.status,
+        result: row.match.result,
+        teamScore: toNumber(row.match.teamScore),
+        opponentScore: toNumber(row.match.opponentScore),
+        boardCount: row.match.boardCount,
+        startsAt: toIso(row.match.startsAt),
+        endsAt: toIso(row.match.endsAt),
+        leagueSlug:
+          row.league?.slug ?? classifyLeague(row.match.name).leagueSlug,
+        leagueName: row.league?.name ?? null,
+        isOfficialCandidate: Boolean(row.match.isOfficial),
+        chesscomUrl: row.match.chesscomUrl,
+        opponentUrl: /^https?:\/\//i.test(row.match.opponent ?? "")
+          ? row.match.opponent
+          : null,
+      },
     };
   } catch (error) {
     logReadFallback("getMatchById", error);
-    return { data: demoMatches.find((match) => Number(match.id) === id) ?? null, source: "demo" };
+    return {
+      data: demoMatches.find((match) => Number(match.id) === id) ?? null,
+      source: "demo",
+    };
   }
 }
 
-export async function getMatchParticipations(matchId: number): Promise<ApiResponse<MatchParticipation[]>> {
+export async function getMatchParticipations(
+  matchId: number,
+): Promise<ApiResponse<MatchParticipation[]>> {
   if (!db) return { data: [], source: "demo" };
 
   try {
@@ -138,7 +455,22 @@ export async function getMatchParticipations(matchId: number): Promise<ApiRespon
       .orderBy(matchParticipations.boardNumber, players.username);
     return {
       source: "database",
-      data: rows.map((row: any) => ({ matchId: String(row.participation.matchId), playerId: String(row.participation.playerId), username: row.player.username, title: row.player.title, boardNumber: row.participation.boardNumber, score: Number(row.participation.score), gamesPlayed: row.participation.gamesPlayed, wins: row.participation.wins, draws: row.participation.draws, losses: row.participation.losses, timeoutLosses: row.participation.timeoutLosses, upsetWins: row.participation.upsetWins, avgOpponentRating: row.participation.avgOpponentRating, lastPlayedAt: toIso(row.participation.lastPlayedAt) })),
+      data: rows.map((row: any) => ({
+        matchId: String(row.participation.matchId),
+        playerId: String(row.participation.playerId),
+        username: row.player.username,
+        title: row.player.title,
+        boardNumber: row.participation.boardNumber,
+        score: Number(row.participation.score),
+        gamesPlayed: row.participation.gamesPlayed,
+        wins: row.participation.wins,
+        draws: row.participation.draws,
+        losses: row.participation.losses,
+        timeoutLosses: row.participation.timeoutLosses,
+        upsetWins: row.participation.upsetWins,
+        avgOpponentRating: row.participation.avgOpponentRating,
+        lastPlayedAt: toIso(row.participation.lastPlayedAt),
+      })),
     };
   } catch (error) {
     logReadFallback("getMatchParticipations", error);
@@ -146,14 +478,20 @@ export async function getMatchParticipations(matchId: number): Promise<ApiRespon
   }
 }
 
-export async function getMatchGames(matchId: number): Promise<ApiResponse<MatchGame[]>> {
+export async function getMatchGames(
+  matchId: number,
+): Promise<ApiResponse<MatchGame[]>> {
   if (!db) return { data: [], source: "demo" };
 
   try {
     const whitePlayer = alias(players, "white_player");
     const blackPlayer = alias(players, "black_player");
     const rows = await db
-      .select({ game: games, whiteUsername: whitePlayer.username, blackUsername: blackPlayer.username })
+      .select({
+        game: games,
+        whiteUsername: whitePlayer.username,
+        blackUsername: blackPlayer.username,
+      })
       .from(games)
       .leftJoin(whitePlayer, eq(games.whitePlayerId, whitePlayer.id))
       .leftJoin(blackPlayer, eq(games.blackPlayerId, blackPlayer.id))
@@ -161,7 +499,17 @@ export async function getMatchGames(matchId: number): Promise<ApiResponse<MatchG
       .orderBy(games.endTime);
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.game.id), chesscomGameUuid: row.game.chesscomGameUuid, matchId: row.game.matchId == null ? null : String(row.game.matchId), whiteUsername: row.whiteUsername, blackUsername: row.blackUsername, timeClass: row.game.timeClass, rated: Boolean(row.game.rated), result: row.game.result, endTime: toIso(row.game.endTime) })),
+      data: rows.map((row: any) => ({
+        id: String(row.game.id),
+        chesscomGameUuid: row.game.chesscomGameUuid,
+        matchId: row.game.matchId == null ? null : String(row.game.matchId),
+        whiteUsername: row.whiteUsername,
+        blackUsername: row.blackUsername,
+        timeClass: row.game.timeClass,
+        rated: Boolean(row.game.rated),
+        result: row.game.result,
+        endTime: toIso(row.game.endTime),
+      })),
     };
   } catch (error) {
     logReadFallback("getMatchGames", error);
@@ -179,7 +527,10 @@ export async function getLeagues(): Promise<ApiResponse<League[]>> {
       .select({
         leagueId: matches.leagueId,
         matchCount: sql<number>`count(*)`.as("match_count"),
-        officialMatchCount: sql<number>`count(*) filter (where ${matches.isOfficial} = 1)`.as("official_match_count"),
+        officialMatchCount:
+          sql<number>`count(*) filter (where ${matches.isOfficial} = 1)`.as(
+            "official_match_count",
+          ),
       })
       .from(matches)
       .groupBy(matches.leagueId)
@@ -236,11 +587,27 @@ export async function getLeagues(): Promise<ApiResponse<League[]>> {
       .leftJoin(contributionStats, eq(contributionStats.leagueId, leagues.id))
       .orderBy(sql`coalesce(${matchStats.matchCount}, 0) desc`, leagues.name);
 
-    console.info("[server/queries] getLeagues completed", { durationMs: Date.now() - startedAt, rowCount: rows.length });
+    console.info("[server/queries] getLeagues completed", {
+      durationMs: Date.now() - startedAt,
+      rowCount: rows.length,
+    });
 
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.id), name: row.name, slug: row.slug, season: row.season, status: row.status, startsAt: toIso(row.startsAt), endsAt: toIso(row.endsAt), matchCount: Number(row.matchCount), officialMatchCount: Number(row.officialMatchCount), gameCount: Number(row.gameCount), participationCount: Number(row.participationCount), contributionCount: Number(row.contributionCount) })),
+      data: rows.map((row: any) => ({
+        id: String(row.id),
+        name: row.name,
+        slug: row.slug,
+        season: row.season,
+        status: row.status,
+        startsAt: toIso(row.startsAt),
+        endsAt: toIso(row.endsAt),
+        matchCount: Number(row.matchCount),
+        officialMatchCount: Number(row.officialMatchCount),
+        gameCount: Number(row.gameCount),
+        participationCount: Number(row.participationCount),
+        contributionCount: Number(row.contributionCount),
+      })),
     };
   } catch (error) {
     const readError = describeReadError(error);
@@ -253,11 +620,25 @@ export async function getSyncJobs(): Promise<ApiResponse<SyncJob[]>> {
   if (!db) return { data: demoSyncJobs, source: "demo" };
 
   try {
-    const rows = await db.select().from(syncJobs).orderBy(desc(syncJobs.createdAt)).limit(10);
+    const rows = await db
+      .select()
+      .from(syncJobs)
+      .orderBy(desc(syncJobs.createdAt))
+      .limit(10);
     if (rows.length === 0) return { data: demoSyncJobs, source: "demo" };
     return {
       source: "database",
-      data: rows.map((row: any) => ({ id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? toIso(new Date()) ?? "" })),
+      data: rows.map((row: any) => ({
+        id: String(row.id),
+        type: row.type,
+        status: row.status,
+        message: row.message,
+        recordsProcessed: row.recordsProcessed,
+        errorMessage: row.errorMessage,
+        startedAt: toIso(row.startedAt),
+        finishedAt: toIso(row.finishedAt),
+        createdAt: toIso(row.createdAt) ?? toIso(new Date()) ?? "",
+      })),
     };
   } catch (error) {
     logReadFallback("getSyncJobs", error);
@@ -265,10 +646,23 @@ export async function getSyncJobs(): Promise<ApiResponse<SyncJob[]>> {
   }
 }
 
-export type LeaderboardSort = "contribution_score" | "points" | "win_rate" | "games";
-export type LeaderboardFilters = { league?: string; period?: string; minGames?: number; sort?: LeaderboardSort };
+export type LeaderboardSort =
+  | "contribution_score"
+  | "points"
+  | "win_rate"
+  | "games";
+export type LeaderboardFilters = {
+  league?: string;
+  period?: string;
+  minGames?: number;
+  sort?: LeaderboardSort;
+  q?: string;
+};
 
-const leaderboardSorters: Record<LeaderboardSort, (row: LeaderboardRow) => number> = {
+const leaderboardSorters: Record<
+  LeaderboardSort,
+  (row: LeaderboardRow) => number
+> = {
   contribution_score: (row) => row.contributionScore,
   points: (row) => row.points,
   win_rate: (row) => row.winRate,
@@ -280,23 +674,48 @@ function normalizeLeaderboardSort(sort: string | undefined): LeaderboardSort {
   return "contribution_score";
 }
 
-function rankLeaderboard(rows: LeaderboardRow[], sort: LeaderboardSort, minGames: number) {
+function rankLeaderboard(
+  rows: LeaderboardRow[],
+  sort: LeaderboardSort,
+  minGames: number,
+) {
   return rows
     .filter((row) => row.games >= minGames)
-    .sort((a, b) => leaderboardSorters[sort](b) - leaderboardSorters[sort](a) || b.contributionScore - a.contributionScore || a.username.localeCompare(b.username))
+    .sort(
+      (a, b) =>
+        leaderboardSorters[sort](b) - leaderboardSorters[sort](a) ||
+        b.contributionScore - a.contributionScore ||
+        a.username.localeCompare(b.username),
+    )
     .map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
-export async function getLeaderboard(filters: LeaderboardFilters = {}): Promise<ApiResponse<LeaderboardRow[]>> {
+export async function getLeaderboard(
+  filters: LeaderboardFilters = {},
+): Promise<ApiResponse<LeaderboardRow[]>> {
   const period = filters.period ?? "all";
-  const selectedLeague = filters.league && filters.league !== "all" ? filters.league : null;
+  const selectedLeague =
+    filters.league && filters.league !== "all" ? filters.league : null;
   const minGames = Math.max(0, filters.minGames ?? 0);
   const sort = normalizeLeaderboardSort(filters.sort);
+  const query = filters.q?.trim().toLowerCase() ?? "";
 
-  if (!db) return { data: rankLeaderboard(demoLeaderboard, sort, minGames), source: "demo" };
+  if (!db)
+    return {
+      data: rankLeaderboard(
+        demoLeaderboard.filter(
+          (row) => !query || row.username.toLowerCase().includes(query),
+        ),
+        sort,
+        minGames,
+      ),
+      source: "demo",
+    };
 
   const conditions: SQL[] = [eq(playerContributions.period, period)];
   if (selectedLeague) conditions.push(eq(leagues.slug, selectedLeague));
+  if (query)
+    conditions.push(sql`lower(${players.username}) like ${`%${query}%`}`);
 
   try {
     const rows = await db
@@ -310,7 +729,9 @@ export async function getLeaderboard(filters: LeaderboardFilters = {}): Promise<
         losses: sql<number>`coalesce(sum(${playerContributions.losses}), 0)`,
         points: sql<number>`coalesce(sum(${playerContributions.points}), 0)`,
         contributionScore: sql<number>`coalesce(sum(${playerContributions.contributionScore}), 0)`,
-        avgOpponentRating: sql<number | null>`round(sum(${playerContributions.avgOpponentRating} * ${playerContributions.gamesPlayed}) / nullif(sum(${playerContributions.gamesPlayed}), 0))`,
+        avgOpponentRating: sql<
+          number | null
+        >`round(sum(${playerContributions.avgOpponentRating} * ${playerContributions.gamesPlayed}) / nullif(sum(${playerContributions.gamesPlayed}), 0))`,
         lastPlayedAt: sql<Date | null>`max(${playerContributions.lastPlayedAt})`,
       })
       .from(playerContributions)
@@ -335,7 +756,8 @@ export async function getLeaderboard(filters: LeaderboardFilters = {}): Promise<
         points: Number(row.points),
         winRate: games > 0 ? (wins / games) * 100 : 0,
         contributionScore: Number(row.contributionScore),
-        avgOpponentRating: row.avgOpponentRating == null ? null : Number(row.avgOpponentRating),
+        avgOpponentRating:
+          row.avgOpponentRating == null ? null : Number(row.avgOpponentRating),
         lastPlayedAt: toIso(row.lastPlayedAt),
       };
     });
@@ -343,7 +765,16 @@ export async function getLeaderboard(filters: LeaderboardFilters = {}): Promise<
     return { data: rankLeaderboard(data, sort, minGames), source: "database" };
   } catch (error) {
     logReadFallback("getLeaderboard", error);
-    return { data: rankLeaderboard(demoLeaderboard, sort, minGames), source: "demo" };
+    return {
+      data: rankLeaderboard(
+        demoLeaderboard.filter(
+          (row) => !query || row.username.toLowerCase().includes(query),
+        ),
+        sort,
+        minGames,
+      ),
+      source: "demo",
+    };
   }
 }
 
@@ -351,16 +782,61 @@ export async function getTeamSummary(): Promise<ApiResponse<TeamSummary>> {
   if (!db) return { data: demoSummary, source: "demo" };
 
   try {
-    const [playersResult, matchesResult, leaguesResult, jobsResult] = await Promise.all([getPlayers(), getMatches(), getLeagues(), getSyncJobs()]);
-    if ([playersResult.source, matchesResult.source, leaguesResult.source, jobsResult.source].includes("demo")) return { data: demoSummary, source: "demo" };
+    const oldSqlitePredicate = sql`${games.rawGame}->>${"source"} = ${"old_sqlite"} or (jsonb_typeof(${games.rawGame}) = ${"string"} and ${games.rawGame} #>> ${"{}"} like ${"%old_sqlite%"})`;
+    const [
+      [playersRow],
+      [matchesRow],
+      [officialMatchesRow],
+      [activeLeaguesRow],
+      [gamesRow],
+      [oldArchiveGamesRow],
+      [contributionRowsRow],
+      [gameDatesRow],
+      jobsResult,
+    ] = await Promise.all([
+      db.select({ count: sql<number>`count(*)` }).from(players),
+      db.select({ count: sql<number>`count(*)` }).from(matches),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(matches)
+        .where(eq(matches.isOfficial, 1)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(leagues)
+        .where(
+          sql`${leagues.status} = ${"active"} and ${leagues.slug} not in (${"unknown"}, ${"friendly"})`,
+        ),
+      db.select({ count: sql<number>`count(*)` }).from(games),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(games)
+        .where(oldSqlitePredicate),
+      db.select({ count: sql<number>`count(*)` }).from(playerContributions),
+      db
+        .select({
+          earliestGameDate: sql<Date | null>`min(${games.endTime})`,
+          latestGameDate: sql<Date | null>`max(${games.endTime})`,
+        })
+        .from(games),
+      getSyncJobs(),
+    ]);
+
     return {
       source: "database",
       data: {
-        players: playersResult.data.length,
-        matches: matchesResult.data.length,
-        activeLeagues: leaguesResult.data.filter((league) => league.status === "active").length,
-        games: playersResult.data.reduce((sum, player) => sum + player.gamesPlayed, 0),
-        lastSync: jobsResult.data[0] ?? null,
+        players: Number(playersRow?.count ?? 0),
+        matches: Number(matchesRow?.count ?? 0),
+        activeLeagues: Number(activeLeaguesRow?.count ?? 0),
+        games: Number(gamesRow?.count ?? 0),
+        oldArchiveGames: Number(oldArchiveGamesRow?.count ?? 0),
+        officialMatches: Number(officialMatchesRow?.count ?? 0),
+        contributionRows: Number(contributionRowsRow?.count ?? 0),
+        earliestGameDate: toIso(gameDatesRow?.earliestGameDate),
+        latestGameDate: toIso(gameDatesRow?.latestGameDate),
+        lastSync:
+          jobsResult.source === "database"
+            ? (jobsResult.data[0] ?? null)
+            : null,
       },
     };
   } catch (error) {
@@ -370,7 +846,35 @@ export async function getTeamSummary(): Promise<ApiResponse<TeamSummary>> {
 }
 
 export async function createDemoSyncJob(): Promise<ApiResponse<SyncJob>> {
-  if (!db) return { data: { ...demoSyncJobs[0], id: crypto.randomUUID(), message: "Demo sync queued; configure DATABASE_URL for persistence" }, source: "demo" };
-  const [row] = await db.insert(syncJobs).values({ type: "matches", status: "queued", message: "Match sync queued from MVP admin endpoint" }).returning();
-  return { source: "database", data: { id: String(row.id), type: row.type, status: row.status, message: row.message, recordsProcessed: row.recordsProcessed, errorMessage: row.errorMessage, startedAt: toIso(row.startedAt), finishedAt: toIso(row.finishedAt), createdAt: toIso(row.createdAt) ?? toIso(new Date()) ?? "" } };
+  if (!db)
+    return {
+      data: {
+        ...demoSyncJobs[0],
+        id: crypto.randomUUID(),
+        message: "Demo sync queued; configure DATABASE_URL for persistence",
+      },
+      source: "demo",
+    };
+  const [row] = await db
+    .insert(syncJobs)
+    .values({
+      type: "matches",
+      status: "queued",
+      message: "Match sync queued from MVP admin endpoint",
+    })
+    .returning();
+  return {
+    source: "database",
+    data: {
+      id: String(row.id),
+      type: row.type,
+      status: row.status,
+      message: row.message,
+      recordsProcessed: row.recordsProcessed,
+      errorMessage: row.errorMessage,
+      startedAt: toIso(row.startedAt),
+      finishedAt: toIso(row.finishedAt),
+      createdAt: toIso(row.createdAt) ?? toIso(new Date()) ?? "",
+    },
+  };
 }
