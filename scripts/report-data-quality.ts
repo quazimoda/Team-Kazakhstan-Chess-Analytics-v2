@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import postgres, { type Sql } from "postgres";
-import { formatCsv, summarizeSuspiciousRows } from "../src/lib/import/dataQualityReport";
+import { buildNormalizedDuplicateGameKeyRows, formatCsv, summarizeSuspiciousRows, type GameKeySourceRow } from "../src/lib/import/dataQualityReport";
+import { normalizedGameKeys } from "../src/lib/import/oldSqliteOfficial";
 
 const outputDir = "old-db-import-output";
 const reportPath = `${outputDir}/data_quality_report.json`;
@@ -55,6 +56,7 @@ type TopPlayerRow = {
 type SuspiciousRow = {
   check_type: string;
   row_id: string;
+  normalized_key: string | null;
   occurrence_count: number;
   league_id: number | null;
   match_id: number | null;
@@ -228,6 +230,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'old_sqlite_non_official_match' as check_type,
         g.id::text as row_id,
+        null::text as normalized_key,
         1::int as occurrence_count,
         m.league_id::int as league_id,
         g.match_id::int as match_id,
@@ -244,6 +247,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'old_sqlite_null_league' as check_type,
         g.id::text as row_id,
+        null::text as normalized_key,
         1::int as occurrence_count,
         m.league_id::int as league_id,
         g.match_id::int as match_id,
@@ -260,6 +264,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'game_null_match_id' as check_type,
         g.id::text as row_id,
+        null::text as normalized_key,
         1::int as occurrence_count,
         null::int as league_id,
         g.match_id::int as match_id,
@@ -274,6 +279,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'match_participation_missing_player' as check_type,
         concat(mp.match_id, ':', mp.player_id) as row_id,
+        null::text as normalized_key,
         1::int as occurrence_count,
         m.league_id::int as league_id,
         mp.match_id::int as match_id,
@@ -290,6 +296,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'player_contribution_zero_games_all' as check_type,
         pc.id::text as row_id,
+        null::text as normalized_key,
         1::int as occurrence_count,
         pc.league_id::int as league_id,
         null::int as match_id,
@@ -305,6 +312,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'player_contribution_target_league_non_all_period' as check_type,
         pc.id::text as row_id,
+        null::text as normalized_key,
         1::int as occurrence_count,
         pc.league_id::int as league_id,
         null::int as match_id,
@@ -320,6 +328,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'duplicate_chesscom_game_uuid' as check_type,
         duplicate_values.chesscom_game_uuid as row_id,
+        null::text as normalized_key,
         duplicate_values.occurrence_count::int as occurrence_count,
         null::int as league_id,
         null::int as match_id,
@@ -338,6 +347,7 @@ async function buildSuspiciousRows(sql: QuerySql) {
       select
         'old_sqlite_raw_game_not_object' as check_type,
         g.id::text as row_id,
+        null::text as normalized_key,
         1::int as occurrence_count,
         m.league_id::int as league_id,
         g.match_id::int as match_id,
@@ -353,11 +363,29 @@ async function buildSuspiciousRows(sql: QuerySql) {
   `;
 }
 
+async function buildNormalizedDuplicateRows(sql: QuerySql) {
+  const rows = await sql<GameKeySourceRow[]>`
+    select
+      id::int as game_id,
+      chesscom_game_uuid,
+      raw_game->>'url' as raw_url,
+      raw_game->>'game_url' as raw_game_url,
+      raw_game->>'link' as raw_link
+    from games
+    where chesscom_game_uuid is not null
+      or raw_game ?| array['url', 'game_url', 'link']
+    order by id
+  `;
+
+  return buildNormalizedDuplicateGameKeyRows(rows, normalizedGameKeys);
+}
+
 async function buildReport(sql: QuerySql): Promise<DataQualityReport> {
   const global = await buildGlobalSummary(sql);
   const byLeague = await buildLeagueRows(sql);
   const topPlayers = await buildTopPlayerRows(sql);
-  const suspiciousRows = await buildSuspiciousRows(sql);
+  const suspiciousRows = [...await buildSuspiciousRows(sql), ...await buildNormalizedDuplicateRows(sql)]
+    .sort((left, right) => left.check_type.localeCompare(right.check_type) || left.row_id.localeCompare(right.row_id));
 
   return {
     generated_at: new Date().toISOString(),
@@ -385,7 +413,7 @@ async function main() {
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   writeCsv(byLeagueCsvPath, report.by_league, ["league_id", "league_slug", "league_name", "official_matches", "games", "old_sqlite_games", "players", "participations", "contribution_rows", "games_played", "wins", "draws", "losses", "win_rate"]);
   writeCsv(topPlayersCsvPath, report.top_players, ["league_id", "league_slug", "league_name", "rank", "username", "games_played", "wins", "draws", "losses", "win_rate", "contribution_score", "last_played_at"]);
-  writeCsv(suspiciousRowsCsvPath, report.suspicious_rows, ["check_type", "row_id", "occurrence_count", "league_id", "match_id", "player_id", "chesscom_game_uuid", "detail"]);
+  writeCsv(suspiciousRowsCsvPath, report.suspicious_rows, ["check_type", "row_id", "normalized_key", "occurrence_count", "league_id", "match_id", "player_id", "chesscom_game_uuid", "detail"]);
 
   console.log("Post-import data quality summary:");
   console.log(JSON.stringify({ global: report.global, suspicious_counts: report.suspicious_counts }, null, 2));
