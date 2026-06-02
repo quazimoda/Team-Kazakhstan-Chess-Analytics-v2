@@ -117,6 +117,7 @@ export type MatchDetailCoverage = {
   storedGamesCount: number;
   oldSqliteGamesCount: number;
   chesscomApiGamesCount: number;
+  unknownSourceGamesCount: number;
   unknownResultGamesCount: number;
   unknownTimeClassGamesCount: number;
   gamesWithoutChesscomUrlCount: number;

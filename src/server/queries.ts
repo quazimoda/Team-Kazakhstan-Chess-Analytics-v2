@@ -13,8 +13,8 @@ import {
 } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { toIsoOrNull } from "@/lib/dates";
-import { formatMatchResult, isOfficialDailyTimeoutLoss, isOfficialDailyTimeoutWin } from "@/lib/match-detail";
-import { chesscomMemberUrl, isDailyTimeClass, mapProfileSummary, normalizeProfileUsername, resultFromViewedPlayerPerspective } from "@/lib/player-profile";
+import { formatMatchResult, isOfficialDailyTimeoutLoss } from "@/lib/match-detail";
+import { chesscomMemberUrl, mapProfileSummary, normalizeProfileUsername, resultFromViewedPlayerPerspective } from "@/lib/player-profile";
 import {
   demoLeaderboard,
   demoLeagues,
@@ -457,6 +457,26 @@ type MatchDetailPlayerSqlRow = {
   lastPlayedAt: Date | string | null;
 };
 
+type MatchDetailAggregateSqlRow = {
+  storedGamesCount: number | string;
+  oldSqliteGamesCount: number | string;
+  chesscomApiGamesCount: number | string;
+  unknownSourceGamesCount: number | string;
+  opponentPlayersCount: number | string;
+  unknownResultGamesCount: number | string;
+  unknownTimeClassGamesCount: number | string;
+  gamesWithoutChesscomUrlCount: number | string;
+  dailyTimeoutLosses: number | string;
+  dailyTimeoutWins: number | string;
+  lastStoredGameDate: Date | string | null;
+};
+
+type MatchDetailPlayerTimeoutSqlRow = {
+  username: string;
+  dailyTimeoutLosses: number | string;
+};
+
+
 function demoMatchDetail(matchId: number): MatchDetail | null {
   const match = demoMatches.find((row) => Number(row.id) === matchId);
   if (!match) return null;
@@ -486,6 +506,7 @@ function demoMatchDetail(matchId: number): MatchDetail | null {
       storedGamesCount: 0,
       oldSqliteGamesCount: 0,
       chesscomApiGamesCount: 0,
+      unknownSourceGamesCount: 0,
       unknownResultGamesCount: 0,
       unknownTimeClassGamesCount: 0,
       gamesWithoutChesscomUrlCount: 0,
@@ -510,7 +531,7 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
     if (!matchRow) return { data: null, source: "database" };
 
     const isOfficial = Boolean(matchRow.match.isOfficial);
-    const [playerRows, gameRows] = await Promise.all([
+    const [playerRows, gameRows, aggregateRows, playerTimeoutRows] = await Promise.all([
       db.execute<MatchDetailPlayerSqlRow>(sql`
         select
           p.id as "playerId",
@@ -569,6 +590,83 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
         order by "endedAt" desc nulls last, id desc
         limit 200
       `),
+      db.execute<MatchDetailAggregateSqlRow>(sql`
+        with match_games as (
+          select
+            g.id,
+            g.result,
+            g.time_class,
+            g.end_time,
+            case when g.raw_game->>'source' = 'old_sqlite' then 'old_sqlite' when g.raw_game is not null then 'chesscom_api' else 'unknown' end as data_source,
+            coalesce(g.raw_game->>'url', g.raw_game->>'game_url', g.raw_game->>'link') as chesscom_url,
+            case
+              when mp_white.player_id is not null then coalesce(g.raw_game->'white'->>'result', g.raw_game->>'old_result')
+              when mp_black.player_id is not null then coalesce(g.raw_game->'black'->>'result', g.raw_game->>'old_result')
+              else null
+            end as team_player_result_text,
+            case
+              when mp_white.player_id is not null then g.raw_game->'black'->>'result'
+              when mp_black.player_id is not null then g.raw_game->'white'->>'result'
+              else null
+            end as opponent_result_text,
+            case when mp_white.player_id is not null then bp.username when mp_black.player_id is not null then wp.username else null end as opponent_username
+          from games g
+          left join players wp on wp.id = g.white_player_id
+          left join players bp on bp.id = g.black_player_id
+          left join match_participations mp_white on mp_white.match_id = g.match_id and mp_white.player_id = g.white_player_id
+          left join match_participations mp_black on mp_black.match_id = g.match_id and mp_black.player_id = g.black_player_id
+          where g.match_id = ${id}
+        )
+        select
+          count(*)::int as "storedGamesCount",
+          count(*) filter (where data_source = 'old_sqlite')::int as "oldSqliteGamesCount",
+          count(*) filter (where data_source = 'chesscom_api')::int as "chesscomApiGamesCount",
+          count(*) filter (where data_source = 'unknown')::int as "unknownSourceGamesCount",
+          count(distinct opponent_username) filter (where opponent_username is not null)::int as "opponentPlayersCount",
+          count(*) filter (where result = 'unknown')::int as "unknownResultGamesCount",
+          count(*) filter (where time_class is null or btrim(time_class) = '')::int as "unknownTimeClassGamesCount",
+          count(*) filter (where chesscom_url is null or btrim(chesscom_url) = '')::int as "gamesWithoutChesscomUrlCount",
+          count(*) filter (
+            where ${isOfficial}
+              and lower(coalesce(time_class, '')) in ('daily', 'correspondence', 'daily960')
+              and regexp_replace(lower(coalesce(team_player_result_text, '')), '[\s_-]+', '', 'g') in ('timeout', 'timedout', 'timeforfeit')
+          )::int as "dailyTimeoutLosses",
+          count(*) filter (
+            where ${isOfficial}
+              and lower(coalesce(time_class, '')) in ('daily', 'correspondence', 'daily960')
+              and regexp_replace(lower(coalesce(opponent_result_text, '')), '[\s_-]+', '', 'g') in ('timeout', 'timedout', 'timeforfeit')
+          )::int as "dailyTimeoutWins",
+          max(end_time) as "lastStoredGameDate"
+        from match_games
+      `),
+      db.execute<MatchDetailPlayerTimeoutSqlRow>(sql`
+        with team_games as (
+          select
+            case when mp_white.player_id is not null then wp.username when mp_black.player_id is not null then bp.username else null end as username,
+            g.time_class,
+            case
+              when mp_white.player_id is not null then coalesce(g.raw_game->'white'->>'result', g.raw_game->>'old_result')
+              when mp_black.player_id is not null then coalesce(g.raw_game->'black'->>'result', g.raw_game->>'old_result')
+              else null
+            end as team_player_result_text
+          from games g
+          left join players wp on wp.id = g.white_player_id
+          left join players bp on bp.id = g.black_player_id
+          left join match_participations mp_white on mp_white.match_id = g.match_id and mp_white.player_id = g.white_player_id
+          left join match_participations mp_black on mp_black.match_id = g.match_id and mp_black.player_id = g.black_player_id
+          where g.match_id = ${id}
+        )
+        select
+          username,
+          count(*) filter (
+            where ${isOfficial}
+              and lower(coalesce(time_class, '')) in ('daily', 'correspondence', 'daily960')
+              and regexp_replace(lower(coalesce(team_player_result_text, '')), '[\s_-]+', '', 'g') in ('timeout', 'timedout', 'timeforfeit')
+          )::int as "dailyTimeoutLosses"
+        from team_games
+        where username is not null
+        group by username
+      `),
     ]);
 
     const match: MatchDetail["match"] = {
@@ -609,12 +707,12 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
       isDailyTimeoutLoss: isOfficialDailyTimeoutLoss({ isOfficial, timeClass: row.timeClass, teamPlayerResultText: row.teamPlayerResultText }),
     }));
 
-    const timeoutLossesByUsername = new Map<string, number>();
-    for (const row of gameRows) {
-      if (row.teamPlayerUsername && isOfficialDailyTimeoutLoss({ isOfficial, timeClass: row.timeClass, teamPlayerResultText: row.teamPlayerResultText })) {
-        timeoutLossesByUsername.set(row.teamPlayerUsername.toLowerCase(), (timeoutLossesByUsername.get(row.teamPlayerUsername.toLowerCase()) ?? 0) + 1);
-      }
-    }
+    const timeoutLossesByUsername = new Map(
+      playerTimeoutRows.map((row) => [
+        row.username.toLowerCase(),
+        Number(row.dailyTimeoutLosses),
+      ]),
+    );
 
     const playersDetail = playerRows.map((row) => ({
       playerId: String(row.playerId),
@@ -635,11 +733,24 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
       a.username.localeCompare(b.username),
     );
 
-    const oldSqliteGames = gamesDetail.filter((game) => game.dataSource === "old_sqlite").length;
-    const chesscomApiGames = gamesDetail.filter((game) => game.dataSource === "chesscom_api").length;
-    const dailyTimeoutLosses = gameRows.filter((row) => isOfficialDailyTimeoutLoss({ isOfficial, timeClass: row.timeClass, teamPlayerResultText: row.teamPlayerResultText })).length;
-    const dailyTimeoutWins = gameRows.filter((row) => isOfficialDailyTimeoutWin({ isOfficial, timeClass: row.timeClass, opponentResultText: row.opponentResultText })).length;
-    const opponentPlayers = new Set(gamesDetail.map((game) => game.opponentUsername?.toLowerCase()).filter((username): username is string => Boolean(username)));
+    const aggregate = aggregateRows[0] ?? {
+      storedGamesCount: 0,
+      oldSqliteGamesCount: 0,
+      chesscomApiGamesCount: 0,
+      unknownSourceGamesCount: 0,
+      opponentPlayersCount: 0,
+      unknownResultGamesCount: 0,
+      unknownTimeClassGamesCount: 0,
+      gamesWithoutChesscomUrlCount: 0,
+      dailyTimeoutLosses: 0,
+      dailyTimeoutWins: 0,
+      lastStoredGameDate: null,
+    };
+    const oldSqliteGames = Number(aggregate.oldSqliteGamesCount);
+    const chesscomApiGames = Number(aggregate.chesscomApiGamesCount);
+    const dailyTimeoutLosses = Number(aggregate.dailyTimeoutLosses);
+    const dailyTimeoutWins = Number(aggregate.dailyTimeoutWins);
+    const opponentPlayersCount = Number(aggregate.opponentPlayersCount);
     const result = formatMatchResult({ status: match.status, result: match.result, teamScore: match.teamScore, opponentScore: match.opponentScore });
 
     return {
@@ -650,9 +761,9 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
           teamScore: match.teamScore,
           opponentScore: match.opponentScore,
           result,
-          totalStoredGames: gamesDetail.length,
+          totalStoredGames: Number(aggregate.storedGamesCount),
           teamPlayersCount: playersDetail.length,
-          opponentPlayersCount: opponentPlayers.size,
+          opponentPlayersCount,
           dailyTimeoutLosses,
           dailyTimeoutWins,
           oldSqliteGames,
@@ -661,13 +772,14 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
         players: playersDetail,
         games: gamesDetail,
         coverage: {
-          storedGamesCount: gamesDetail.length,
+          storedGamesCount: Number(aggregate.storedGamesCount),
           oldSqliteGamesCount: oldSqliteGames,
           chesscomApiGamesCount: chesscomApiGames,
-          unknownResultGamesCount: gamesDetail.filter((game) => game.result === "unknown").length,
-          unknownTimeClassGamesCount: gamesDetail.filter((game) => !isDailyTimeClass(game.timeClass) && !game.timeClass).length,
-          gamesWithoutChesscomUrlCount: gamesDetail.filter((game) => !game.chesscomUrl).length,
-          lastStoredGameDate: gamesDetail.map((game) => game.endedAt).filter((date): date is string => Boolean(date)).sort().at(-1) ?? null,
+          unknownSourceGamesCount: Number(aggregate.unknownSourceGamesCount),
+          unknownResultGamesCount: Number(aggregate.unknownResultGamesCount),
+          unknownTimeClassGamesCount: Number(aggregate.unknownTimeClassGamesCount),
+          gamesWithoutChesscomUrlCount: Number(aggregate.gamesWithoutChesscomUrlCount),
+          lastStoredGameDate: toIso(aggregate.lastStoredGameDate),
         },
       },
     };

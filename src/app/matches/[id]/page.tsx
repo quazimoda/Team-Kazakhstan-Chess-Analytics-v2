@@ -185,6 +185,7 @@ export default async function MatchDetailsPage({
           <div><dt className="text-slate-400">Stored games</dt><dd className="text-white">{coverage.storedGamesCount}</dd></div>
           <div><dt className="text-slate-400">Old SQLite games</dt><dd className="text-white">{coverage.oldSqliteGamesCount}</dd></div>
           <div><dt className="text-slate-400">Chess.com API games</dt><dd className="text-white">{coverage.chesscomApiGamesCount}</dd></div>
+          <div><dt className="text-slate-400">Unknown source</dt><dd className="text-white">{coverage.unknownSourceGamesCount}</dd></div>
           <div><dt className="text-slate-400">Unknown result</dt><dd className="text-white">{coverage.unknownResultGamesCount}</dd></div>
           <div><dt className="text-slate-400">Unknown time class</dt><dd className="text-white">{coverage.unknownTimeClassGamesCount}</dd></div>
           <div><dt className="text-slate-400">Without Chess.com URL</dt><dd className="text-white">{coverage.gamesWithoutChesscomUrlCount}</dd></div>
