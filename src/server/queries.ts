@@ -27,6 +27,7 @@ import type {
   LeaderboardRow,
   League,
   Match,
+  MatchDetail,
   MatchGame,
   MatchParticipation,
   Player,
@@ -419,6 +420,271 @@ export async function getMatchGames(
   } catch (error) {
     logReadFallback("getMatchGames", error);
     return { data: [], source: "demo" };
+  }
+}
+
+
+type MatchDetailCoverageSqlRow = {
+  totalStoredGames: number | string;
+  oldSqliteGames: number | string;
+  chesscomApiGames: number | string;
+  unknownSourceGames: number | string;
+  unknownResultGames: number | string;
+  unknownTimeClassGames: number | string;
+  gamesWithoutChesscomUrl: number | string;
+  dailyTimeoutLosses: number | string;
+  dailyTimeoutWins: number | string;
+  lastStoredGameDate: Date | string | null;
+};
+
+type MatchDetailPlayerSqlRow = {
+  playerId: number | string;
+  username: string;
+  games: number | string;
+  wins: number | string;
+  draws: number | string;
+  losses: number | string;
+  score: number | string;
+  dailyTimeoutLosses: number | string;
+  lastPlayedAt: Date | string | null;
+};
+
+type MatchDetailGameSqlRow = {
+  id: number | string;
+  teamPlayerId: number | string | null;
+  teamUsername: string | null;
+  opponentUsername: string | null;
+  color: "white" | "black" | "unknown";
+  result: "win" | "draw" | "loss" | "unknown";
+  timeClass: string | null;
+  endedAt: Date | string | null;
+  dataSource: "old_sqlite" | "chesscom_api" | "unknown";
+  chesscomUrl: string | null;
+  isDailyTimeoutLoss: boolean | number;
+};
+
+const matchDetailChesscomUrlSql = sql`nullif(coalesce(${games.rawGame}->>${"url"}, ${games.rawGame}->>${"game_url"}, ${games.rawGame}->>${"link"}), '')`;
+
+function matchDetailDataSourceSql(gamesSql: typeof games = games) {
+  return sql`
+    case
+      when ${gamesSql.rawGame}->>${"source"} = ${"old_sqlite"}
+        or (jsonb_typeof(${gamesSql.rawGame}) = ${"string"} and ${gamesSql.rawGame} #>> ${"{}"} like ${"%old_sqlite%"})
+        then 'old_sqlite'
+      when ${gamesSql.rawGame} is not null then 'chesscom_api'
+      else 'unknown'
+    end
+  `;
+}
+
+function matchDetailTimeoutLossSql(playerIdSql: SQL) {
+  return sql`
+    ${matches.isOfficial} = 1
+    and lower(coalesce(${games.timeClass}, '')) in ('daily', 'correspondence', 'daily960')
+    and lower(coalesce(
+      case
+        when ${games.whitePlayerId} = ${playerIdSql} then ${games.rawGame} #>> '{white,result}'
+        when ${games.blackPlayerId} = ${playerIdSql} then ${games.rawGame} #>> '{black,result}'
+        else null
+      end,
+      ''
+    )) in ('timeout', 'timedout', 'timed out', 'time_forfeit', 'time-forfeit')
+  `;
+}
+
+function matchDetailTimeoutWinSql(playerIdSql: SQL) {
+  return sql`
+    ${matches.isOfficial} = 1
+    and lower(coalesce(${games.timeClass}, '')) in ('daily', 'correspondence', 'daily960')
+    and lower(coalesce(
+      case
+        when ${games.whitePlayerId} = ${playerIdSql} then ${games.rawGame} #>> '{black,result}'
+        when ${games.blackPlayerId} = ${playerIdSql} then ${games.rawGame} #>> '{white,result}'
+        else null
+      end,
+      ''
+    )) in ('timeout', 'timedout', 'timed out', 'time_forfeit', 'time-forfeit')
+  `;
+}
+
+export async function getMatchDetail(matchId: string | number): Promise<ApiResponse<MatchDetail | null>> {
+  const id = Number(matchId);
+  if (!Number.isInteger(id) || id <= 0) return { data: null, source: db ? "database" : "demo" };
+
+  if (!db || isExplicitDemoMode()) {
+    const match = demoMatches.find((row) => Number(row.id) === id) ?? null;
+    if (!match) return { data: null, source: "demo" };
+    return {
+      source: "demo",
+      data: {
+        match,
+        coverage: {
+          totalStoredGames: 0,
+          displayedGamesCount: 0,
+          oldSqliteGames: 0,
+          chesscomApiGames: 0,
+          unknownSourceGames: 0,
+          unknownResultGames: 0,
+          unknownTimeClassGames: 0,
+          gamesWithoutChesscomUrl: 0,
+          dailyTimeoutLosses: 0,
+          dailyTimeoutWins: 0,
+          lastStoredGameDate: null,
+        },
+        players: [],
+        games: [],
+      },
+    };
+  }
+
+  try {
+    const [matchRow] = await db
+      .select({ match: matches, league: leagues })
+      .from(matches)
+      .leftJoin(leagues, eq(matches.leagueId, leagues.id))
+      .where(eq(matches.id, id))
+      .limit(1);
+
+    if (!matchRow) return { data: null, source: "database" };
+
+    const teamPlayerIdSql = sql`case when wp_mp.player_id is not null then wp.id when bp_mp.player_id is not null then bp.id else null end`;
+    const timeoutLossSql = matchDetailTimeoutLossSql(teamPlayerIdSql);
+    const timeoutWinSql = matchDetailTimeoutWinSql(teamPlayerIdSql);
+    const dataSourceSql = matchDetailDataSourceSql();
+    const chesscomUrlSql = matchDetailChesscomUrlSql;
+
+    const [coverageRows, playerRows, gameRows] = await Promise.all([
+      db.execute<MatchDetailCoverageSqlRow>(sql`
+        select
+          count(*)::int as "totalStoredGames",
+          count(*) filter (where ${dataSourceSql} = 'old_sqlite')::int as "oldSqliteGames",
+          count(*) filter (where ${dataSourceSql} = 'chesscom_api')::int as "chesscomApiGames",
+          count(*) filter (where ${dataSourceSql} = 'unknown')::int as "unknownSourceGames",
+          count(*) filter (where ${games.result} = 'unknown')::int as "unknownResultGames",
+          count(*) filter (where ${games.timeClass} is null or lower(${games.timeClass}) in ('', 'unknown'))::int as "unknownTimeClassGames",
+          count(*) filter (where ${chesscomUrlSql} is null)::int as "gamesWithoutChesscomUrl",
+          count(*) filter (where ${timeoutLossSql})::int as "dailyTimeoutLosses",
+          count(*) filter (where ${timeoutWinSql})::int as "dailyTimeoutWins",
+          max(${games.endTime}) as "lastStoredGameDate"
+        from games
+        inner join matches on games.match_id = matches.id
+        left join players wp on games.white_player_id = wp.id
+        left join players bp on games.black_player_id = bp.id
+        left join match_participations wp_mp on wp_mp.match_id = matches.id and wp_mp.player_id = wp.id
+        left join match_participations bp_mp on bp_mp.match_id = matches.id and bp_mp.player_id = bp.id
+        where games.match_id = ${id}
+      `),
+      db.execute<MatchDetailPlayerSqlRow>(sql`
+        select
+          p.id as "playerId",
+          p.username,
+          count(games.id)::int as games,
+          count(games.id) filter (where games.result = 'win')::int as wins,
+          count(games.id) filter (where games.result = 'draw')::int as draws,
+          count(games.id) filter (where games.result = 'loss')::int as losses,
+          coalesce(sum(case when games.result = 'win' then 1 when games.result = 'draw' then 0.5 else 0 end), 0) as score,
+          count(games.id) filter (where ${matchDetailTimeoutLossSql(sql`p.id`)})::int as "dailyTimeoutLosses",
+          max(games.end_time) as "lastPlayedAt"
+        from match_participations mp
+        inner join players p on p.id = mp.player_id
+        left join games on games.match_id = mp.match_id and (games.white_player_id = p.id or games.black_player_id = p.id)
+        inner join matches on matches.id = mp.match_id
+        where mp.match_id = ${id}
+        group by p.id, p.username
+        order by score desc, games desc, p.username
+      `),
+      db.execute<MatchDetailGameSqlRow>(sql`
+        select
+          games.id,
+          case when wp_mp.player_id is not null then wp.id when bp_mp.player_id is not null then bp.id else null end as "teamPlayerId",
+          case when wp_mp.player_id is not null then wp.username when bp_mp.player_id is not null then bp.username else null end as "teamUsername",
+          case when wp_mp.player_id is not null then bp.username when bp_mp.player_id is not null then wp.username else null end as "opponentUsername",
+          case when wp_mp.player_id is not null then 'white' when bp_mp.player_id is not null then 'black' else 'unknown' end as color,
+          games.result,
+          games.time_class as "timeClass",
+          games.end_time as "endedAt",
+          ${dataSourceSql} as "dataSource",
+          ${chesscomUrlSql} as "chesscomUrl",
+          (${timeoutLossSql}) as "isDailyTimeoutLoss"
+        from games
+        inner join matches on games.match_id = matches.id
+        left join players wp on games.white_player_id = wp.id
+        left join players bp on games.black_player_id = bp.id
+        left join match_participations wp_mp on wp_mp.match_id = matches.id and wp_mp.player_id = wp.id
+        left join match_participations bp_mp on bp_mp.match_id = matches.id and bp_mp.player_id = bp.id
+        where games.match_id = ${id}
+        order by games.end_time desc nulls last, games.id desc
+        limit 200
+      `),
+    ]);
+
+    const coverageRow = coverageRows[0];
+    const displayedGamesCount = gameRows.length;
+    return {
+      source: "database",
+      data: {
+        match: {
+          id: String(matchRow.match.id),
+          chesscomMatchId: matchRow.match.chesscomMatchId,
+          leagueId: matchRow.match.leagueId ? String(matchRow.match.leagueId) : null,
+          name: matchRow.match.name,
+          opponent: matchRow.match.opponent,
+          status: matchRow.match.status,
+          result: matchRow.match.result,
+          teamScore: toNumber(matchRow.match.teamScore),
+          opponentScore: toNumber(matchRow.match.opponentScore),
+          boardCount: matchRow.match.boardCount,
+          startsAt: toIso(matchRow.match.startsAt),
+          endsAt: toIso(matchRow.match.endsAt),
+          leagueSlug: matchRow.league?.slug ?? classifyLeague(matchRow.match.name).leagueSlug,
+          leagueName: matchRow.league?.name ?? null,
+          isOfficialCandidate: Boolean(matchRow.match.isOfficial),
+          chesscomUrl: matchRow.match.chesscomUrl,
+          opponentUrl: /^https?:\/\//i.test(matchRow.match.opponent ?? "") ? matchRow.match.opponent : null,
+        },
+        coverage: {
+          totalStoredGames: Number(coverageRow?.totalStoredGames ?? 0),
+          displayedGamesCount,
+          oldSqliteGames: Number(coverageRow?.oldSqliteGames ?? 0),
+          chesscomApiGames: Number(coverageRow?.chesscomApiGames ?? 0),
+          unknownSourceGames: Number(coverageRow?.unknownSourceGames ?? 0),
+          unknownResultGames: Number(coverageRow?.unknownResultGames ?? 0),
+          unknownTimeClassGames: Number(coverageRow?.unknownTimeClassGames ?? 0),
+          gamesWithoutChesscomUrl: Number(coverageRow?.gamesWithoutChesscomUrl ?? 0),
+          dailyTimeoutLosses: Number(coverageRow?.dailyTimeoutLosses ?? 0),
+          dailyTimeoutWins: Number(coverageRow?.dailyTimeoutWins ?? 0),
+          lastStoredGameDate: toIso(coverageRow?.lastStoredGameDate),
+        },
+        players: playerRows.map((row) => ({
+          playerId: String(row.playerId),
+          username: row.username,
+          games: Number(row.games),
+          wins: Number(row.wins),
+          draws: Number(row.draws),
+          losses: Number(row.losses),
+          score: Number(row.score),
+          dailyTimeoutLosses: Number(row.dailyTimeoutLosses),
+          lastPlayedAt: toIso(row.lastPlayedAt),
+        })),
+        games: gameRows.map((row) => ({
+          id: String(row.id),
+          teamPlayerId: row.teamPlayerId == null ? null : String(row.teamPlayerId),
+          teamUsername: row.teamUsername,
+          opponentUsername: row.opponentUsername,
+          color: row.color,
+          result: row.result,
+          timeClass: row.timeClass,
+          endedAt: toIso(row.endedAt),
+          dataSource: row.dataSource,
+          chesscomUrl: row.chesscomUrl,
+          isDailyTimeoutLoss: Boolean(row.isDailyTimeoutLoss),
+        })),
+      },
+    };
+  } catch (error) {
+    const readError = describeReadError(error);
+    logReadError("getMatchDetail", error);
+    return { data: null, source: "database", readError };
   }
 }
 

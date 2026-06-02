@@ -83,6 +83,54 @@ export type MatchGame = {
   endTime: string | null;
 };
 
+
+export type MatchDetailCoverage = {
+  totalStoredGames: number;
+  displayedGamesCount: number;
+  oldSqliteGames: number;
+  chesscomApiGames: number;
+  unknownSourceGames: number;
+  unknownResultGames: number;
+  unknownTimeClassGames: number;
+  gamesWithoutChesscomUrl: number;
+  dailyTimeoutLosses: number;
+  dailyTimeoutWins: number;
+  lastStoredGameDate: string | null;
+};
+
+export type MatchDetailPlayer = {
+  playerId: string;
+  username: string;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score: number;
+  dailyTimeoutLosses: number;
+  lastPlayedAt: string | null;
+};
+
+export type MatchDetailGame = {
+  id: string;
+  teamPlayerId: string | null;
+  teamUsername: string | null;
+  opponentUsername: string | null;
+  color: "white" | "black" | "unknown";
+  result: "win" | "draw" | "loss" | "unknown";
+  timeClass: string | null;
+  endedAt: string | null;
+  dataSource: "old_sqlite" | "chesscom_api" | "unknown";
+  chesscomUrl: string | null;
+  isDailyTimeoutLoss: boolean;
+};
+
+export type MatchDetail = {
+  match: Match;
+  coverage: MatchDetailCoverage;
+  players: MatchDetailPlayer[];
+  games: MatchDetailGame[];
+};
+
 export type LeaderboardRow = {
   rank: number;
   username: string;
