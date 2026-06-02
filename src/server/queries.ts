@@ -13,6 +13,7 @@ import {
 } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { toIsoOrNull } from "@/lib/dates";
+import { chesscomMemberUrl, mapProfileSummary, normalizeProfileUsername, resultFromViewedPlayerPerspective } from "@/lib/player-profile";
 import {
   demoLeaderboard,
   demoLeagues,
@@ -29,6 +30,7 @@ import type {
   MatchGame,
   MatchParticipation,
   Player,
+  PlayerProfile,
   SyncJob,
   TeamSummary,
 } from "@/types";
@@ -780,4 +782,407 @@ export async function createDemoSyncJob(): Promise<ApiResponse<SyncJob>> {
       createdAt: toIso(row.createdAt) ?? toIso(new Date()) ?? "",
     },
   };
+}
+
+
+type PlayerProfileSqlRow = {
+  id: number | string;
+  username: string;
+  name: string | null;
+  title: string | null;
+  country: string | null;
+  avatarUrl: string | null;
+  chesscomUrl: string | null;
+  currentRating: number | null;
+  matchesPlayed: number | string;
+  gamesPlayed: number | string;
+  wins: number | string;
+  draws: number | string;
+  losses: number | string;
+  contributionScore: number | string;
+  bestLeagueName: string | null;
+  lastPlayedAt: Date | string | null;
+  isTeamMember: number | boolean;
+  lastSeenAt: Date | string | null;
+  dailyOfficialGames: number | string;
+  dailyTimeoutLosses: number | string;
+  dailyTimeoutWins: number | string;
+  lastDailyTimeoutDate: Date | string | null;
+};
+
+type PlayerProfileLeagueSqlRow = {
+  leagueName: string | null;
+  leagueSlug: string | null;
+  gamesPlayed: number | string;
+  matchesPlayed: number | string;
+  wins: number | string;
+  draws: number | string;
+  losses: number | string;
+  contributionScore: number | string;
+  lastPlayedAt: Date | string | null;
+  dailyGames: number | string;
+  dailyTimeoutLosses: number | string;
+};
+
+type PlayerProfileGameSqlRow = {
+  id: number | string;
+  endedAt: Date | string | null;
+  leagueName: string | null;
+  leagueSlug: string | null;
+  matchId: number | string | null;
+  matchTitle: string | null;
+  opponentUsername: string | null;
+  color: "white" | "black" | "unknown";
+  storedTeamResult: "win" | "draw" | "loss" | "unknown";
+  viewedPlayerIsTeamPlayer: boolean | number;
+  chesscomUrl: string | null;
+  dataSource: "old_sqlite" | "chesscom_api" | "unknown";
+  timeClass: string | null;
+  isDailyTimeoutLoss: boolean | number;
+};
+
+type PlayerProfileMatchSqlRow = {
+  id: number | string;
+  opponentTeam: string;
+  leagueName: string | null;
+  leagueSlug: string | null;
+  status: Match["status"];
+  teamResult: Match["result"];
+  playerScore: number | string;
+  gamesPlayed: number | string;
+  wins: number | string;
+  draws: number | string;
+  losses: number | string;
+  lastPlayedAt: Date | string | null;
+};
+
+function profileTimeoutLossSql(playerIdSql: SQL = sql`target.id`) {
+  return sql`
+    lower(coalesce(g.time_class, '')) in ('daily', 'correspondence', 'daily960')
+    and lower(coalesce(
+      case
+        when g.white_player_id = ${playerIdSql} then g.raw_game #>> '{white,result}'
+        when g.black_player_id = ${playerIdSql} then g.raw_game #>> '{black,result}'
+        else null
+      end,
+      ''
+    )) in ('timeout', 'timedout', 'timed out', 'time_forfeit', 'time-forfeit')
+  `;
+}
+
+function profileTimeoutWinSql(playerIdSql: SQL = sql`target.id`) {
+  return sql`
+    lower(coalesce(g.time_class, '')) in ('daily', 'correspondence', 'daily960')
+    and lower(coalesce(
+      case
+        when g.white_player_id = ${playerIdSql} then g.raw_game #>> '{black,result}'
+        when g.black_player_id = ${playerIdSql} then g.raw_game #>> '{white,result}'
+        else null
+      end,
+      ''
+    )) in ('timeout', 'timedout', 'timed out', 'time_forfeit', 'time-forfeit')
+  `;
+}
+
+export async function getPlayerProfile(username: string): Promise<ApiResponse<PlayerProfile | null>> {
+  const normalized = normalizeProfileUsername(username);
+  if (!normalized) return { data: null, source: db ? "database" : "demo" };
+
+  if (!db || isExplicitDemoMode()) {
+    const player = demoPlayers.find((row) => row.username.toLowerCase() === normalized) ?? null;
+    if (!player) return { data: null, source: "demo" };
+    const summary = mapProfileSummary({
+      gamesPlayed: player.gamesPlayed,
+      wins: player.wins,
+      draws: player.draws,
+      losses: player.losses,
+      contributionScore: player.contributionScore,
+      matchesPlayed: player.matchesPlayed,
+      bestLeagueName: player.bestLeagueName ?? null,
+    });
+    return {
+      source: "demo",
+      data: {
+        player,
+        summary: {
+          officialGames: summary.gamesPlayed,
+          wins: summary.wins,
+          draws: summary.draws,
+          losses: summary.losses,
+          winRate: summary.winRate,
+          contributionScore: summary.contributionScore,
+          matchesPlayed: summary.matchesPlayed,
+          bestLeague: summary.bestLeagueName,
+        },
+        timeoutStats: { dailyOfficialGames: 0, dailyTimeoutLosses: 0, dailyTimeoutWins: 0, dailyTimeoutRate: 0, lastDailyTimeoutDate: null },
+        leagueBreakdown: [],
+        recentGames: [],
+        recentMatches: [],
+      },
+    };
+  }
+
+  try {
+    const timeoutLossSql = profileTimeoutLossSql();
+    const timeoutWinSql = profileTimeoutWinSql();
+    const [[profile], leagueRows, gameRows, matchRows] = await Promise.all([
+      db.execute<PlayerProfileSqlRow>(sql`
+        with target as (
+          select * from players where lower(username) = ${normalized} limit 1
+        ), contribution_stats as (
+          select
+            pc.player_id,
+            coalesce(sum(pc.matches_played), 0)::int as matches_played,
+            coalesce(sum(pc.games_played), 0)::int as games_played,
+            coalesce(sum(pc.wins), 0)::int as wins,
+            coalesce(sum(pc.draws), 0)::int as draws,
+            coalesce(sum(pc.losses), 0)::int as losses,
+            coalesce(sum(pc.contribution_score), 0) as contribution_score,
+            max(pc.last_played_at) as last_played_at,
+            (array_agg(l.name order by pc.contribution_score desc, pc.games_played desc) filter (where pc.games_played > 0))[1] as best_league_name
+          from player_contributions pc
+          left join leagues l on pc.league_id = l.id
+          inner join target on target.id = pc.player_id
+          where pc.period = 'all'
+          group by pc.player_id
+        ), timeout_stats as (
+          select
+            target.id as player_id,
+            count(*) filter (where lower(coalesce(g.time_class, '')) in ('daily', 'correspondence', 'daily960'))::int as daily_official_games,
+            count(*) filter (where ${timeoutLossSql})::int as daily_timeout_losses,
+            count(*) filter (where ${timeoutWinSql})::int as daily_timeout_wins,
+            max(g.end_time) filter (where ${timeoutLossSql}) as last_daily_timeout_date
+          from target
+          inner join games g on (g.white_player_id = target.id or g.black_player_id = target.id)
+          inner join matches m on g.match_id = m.id and m.is_official = 1
+          group by target.id
+        )
+        select
+          target.id,
+          target.username,
+          target.name,
+          target.title,
+          target.country,
+          target.avatar_url as "avatarUrl",
+          target.chesscom_url as "chesscomUrl",
+          target.current_rating as "currentRating",
+          coalesce(cs.matches_played, target.matches_played, 0)::int as "matchesPlayed",
+          coalesce(cs.games_played, target.games_played, 0)::int as "gamesPlayed",
+          coalesce(cs.wins, target.wins, 0)::int as wins,
+          coalesce(cs.draws, target.draws, 0)::int as draws,
+          coalesce(cs.losses, target.losses, 0)::int as losses,
+          coalesce(cs.contribution_score, target.contribution_score, 0) as "contributionScore",
+          cs.best_league_name as "bestLeagueName",
+          cs.last_played_at as "lastPlayedAt",
+          target.is_team_member as "isTeamMember",
+          target.last_seen_at as "lastSeenAt",
+          coalesce(ts.daily_official_games, 0)::int as "dailyOfficialGames",
+          coalesce(ts.daily_timeout_losses, 0)::int as "dailyTimeoutLosses",
+          coalesce(ts.daily_timeout_wins, 0)::int as "dailyTimeoutWins",
+          ts.last_daily_timeout_date as "lastDailyTimeoutDate"
+        from target
+        left join contribution_stats cs on cs.player_id = target.id
+        left join timeout_stats ts on ts.player_id = target.id
+      `),
+      db.execute<PlayerProfileLeagueSqlRow>(sql`
+        with target as (select id from players where lower(username) = ${normalized} limit 1),
+        daily_by_league as (
+          select
+            m.league_id,
+            count(*) filter (where lower(coalesce(g.time_class, '')) in ('daily', 'correspondence', 'daily960'))::int as daily_games,
+            count(*) filter (where ${profileTimeoutLossSql()})::int as daily_timeout_losses
+          from target
+          inner join games g on (g.white_player_id = target.id or g.black_player_id = target.id)
+          inner join matches m on g.match_id = m.id and m.is_official = 1
+          group by m.league_id
+        )
+        select
+          l.name as "leagueName",
+          l.slug as "leagueSlug",
+          pc.games_played as "gamesPlayed",
+          pc.matches_played as "matchesPlayed",
+          pc.wins,
+          pc.draws,
+          pc.losses,
+          pc.contribution_score as "contributionScore",
+          pc.last_played_at as "lastPlayedAt",
+          coalesce(dbl.daily_games, 0)::int as "dailyGames",
+          coalesce(dbl.daily_timeout_losses, 0)::int as "dailyTimeoutLosses"
+        from player_contributions pc
+        inner join target on target.id = pc.player_id
+        left join leagues l on pc.league_id = l.id
+        left join daily_by_league dbl on dbl.league_id is not distinct from pc.league_id
+        where pc.period = 'all' and pc.league_id is not null
+        order by pc.contribution_score desc, pc.games_played desc
+      `),
+      db.execute<PlayerProfileGameSqlRow>(sql`
+        with target as (select id from players where lower(username) = ${normalized} limit 1)
+        select
+          g.id,
+          g.end_time as "endedAt",
+          l.name as "leagueName",
+          l.slug as "leagueSlug",
+          m.id as "matchId",
+          m.name as "matchTitle",
+          case when g.white_player_id = target.id then bp.username when g.black_player_id = target.id then wp.username else null end as "opponentUsername",
+          case when g.white_player_id = target.id then 'white' when g.black_player_id = target.id then 'black' else 'unknown' end as color,
+          g.result as "storedTeamResult",
+          exists (
+            select 1
+            from match_participations target_mp
+            where target_mp.match_id = m.id and target_mp.player_id = target.id
+          ) as "viewedPlayerIsTeamPlayer",
+          coalesce(g.raw_game->>'url', g.raw_game->>'game_url', g.raw_game->>'link', g.chesscom_game_uuid) as "chesscomUrl",
+          case when g.raw_game->>'source' = 'old_sqlite' then 'old_sqlite' when g.raw_game is not null then 'chesscom_api' else 'unknown' end as "dataSource",
+          g.time_class as "timeClass",
+          (${profileTimeoutLossSql()}) as "isDailyTimeoutLoss"
+        from target
+        inner join games g on (g.white_player_id = target.id or g.black_player_id = target.id)
+        inner join matches m on g.match_id = m.id and m.is_official = 1
+        left join leagues l on m.league_id = l.id
+        left join players wp on g.white_player_id = wp.id
+        left join players bp on g.black_player_id = bp.id
+        order by g.end_time desc nulls last, g.id desc
+        limit 20
+      `),
+      db.execute<PlayerProfileMatchSqlRow>(sql`
+        with target as (select id from players where lower(username) = ${normalized} limit 1)
+        select
+          m.id,
+          m.opponent as "opponentTeam",
+          l.name as "leagueName",
+          l.slug as "leagueSlug",
+          m.status,
+          m.result as "teamResult",
+          mp.score as "playerScore",
+          mp.games_played as "gamesPlayed",
+          mp.wins,
+          mp.draws,
+          mp.losses,
+          mp.last_played_at as "lastPlayedAt"
+        from target
+        inner join match_participations mp on mp.player_id = target.id
+        inner join matches m on m.id = mp.match_id and m.is_official = 1
+        left join leagues l on m.league_id = l.id
+        order by mp.last_played_at desc nulls last, m.starts_at desc nulls last
+        limit 10
+      `),
+    ]);
+
+    if (!profile) return { data: null, source: "database" };
+
+    const officialGames = Number(profile.gamesPlayed);
+    const wins = Number(profile.wins);
+    const summary = mapProfileSummary({
+      gamesPlayed: officialGames,
+      wins,
+      draws: Number(profile.draws),
+      losses: Number(profile.losses),
+      contributionScore: Number(profile.contributionScore),
+      matchesPlayed: Number(profile.matchesPlayed),
+      bestLeagueName: profile.bestLeagueName,
+    });
+    const dailyOfficialGames = Number(profile.dailyOfficialGames);
+    const dailyTimeoutLosses = Number(profile.dailyTimeoutLosses);
+
+    return {
+      source: "database",
+      data: {
+        player: {
+          id: String(profile.id),
+          username: profile.username,
+          name: profile.name,
+          title: profile.title,
+          country: profile.country,
+          avatarUrl: profile.avatarUrl,
+          chesscomUrl: profile.chesscomUrl ?? chesscomMemberUrl(profile.username),
+          currentRating: profile.currentRating,
+          matchesPlayed: summary.matchesPlayed,
+          gamesPlayed: summary.gamesPlayed,
+          wins: summary.wins,
+          draws: summary.draws,
+          losses: summary.losses,
+          contributionScore: summary.contributionScore,
+          bestLeagueName: summary.bestLeagueName,
+          lastPlayedAt: toIso(summary.gamesPlayed > 0 ? profile.lastPlayedAt : null),
+          isTeamMember: Boolean(profile.isTeamMember),
+          lastSeenAt: toIso(profile.lastSeenAt),
+        },
+        summary: {
+          officialGames: summary.gamesPlayed,
+          wins: summary.wins,
+          draws: summary.draws,
+          losses: summary.losses,
+          winRate: summary.winRate,
+          contributionScore: summary.contributionScore,
+          matchesPlayed: summary.matchesPlayed,
+          bestLeague: summary.bestLeagueName,
+        },
+        timeoutStats: {
+          dailyOfficialGames,
+          dailyTimeoutLosses,
+          dailyTimeoutWins: Number(profile.dailyTimeoutWins),
+          dailyTimeoutRate: dailyOfficialGames > 0 ? (dailyTimeoutLosses / dailyOfficialGames) * 100 : 0,
+          lastDailyTimeoutDate: toIso(profile.lastDailyTimeoutDate),
+        },
+        leagueBreakdown: leagueRows.map((row) => {
+          const gamesPlayed = Number(row.gamesPlayed);
+          const wins = Number(row.wins);
+          const dailyGames = Number(row.dailyGames);
+          const dailyTimeoutLosses = Number(row.dailyTimeoutLosses);
+          return {
+            leagueName: row.leagueName,
+            leagueSlug: row.leagueSlug,
+            gamesPlayed,
+            matchesPlayed: Number(row.matchesPlayed),
+            wins,
+            draws: Number(row.draws),
+            losses: Number(row.losses),
+            winRate: gamesPlayed > 0 ? (wins / gamesPlayed) * 100 : 0,
+            contributionScore: Number(row.contributionScore),
+            lastPlayedAt: toIso(row.lastPlayedAt),
+            dailyGames,
+            dailyTimeoutLosses,
+            timeoutRate: dailyGames > 0 ? (dailyTimeoutLosses / dailyGames) * 100 : 0,
+          };
+        }),
+        recentGames: gameRows.map((row) => ({
+          id: String(row.id),
+          endedAt: toIso(row.endedAt),
+          leagueName: row.leagueName,
+          leagueSlug: row.leagueSlug,
+          matchId: row.matchId == null ? null : String(row.matchId),
+          matchTitle: row.matchTitle,
+          opponentUsername: row.opponentUsername,
+          color: row.color,
+          result: resultFromViewedPlayerPerspective({
+            storedTeamResult: row.storedTeamResult,
+            viewedPlayerIsTeamPlayer: Boolean(row.viewedPlayerIsTeamPlayer),
+          }),
+          chesscomUrl: row.chesscomUrl,
+          dataSource: row.dataSource,
+          timeClass: row.timeClass,
+          isDailyTimeoutLoss: Boolean(row.isDailyTimeoutLoss),
+        })),
+        recentMatches: matchRows.map((row) => ({
+          id: String(row.id),
+          opponentTeam: row.opponentTeam,
+          leagueName: row.leagueName,
+          leagueSlug: row.leagueSlug,
+          status: row.status,
+          teamResult: row.teamResult,
+          playerScore: Number(row.playerScore),
+          gamesPlayed: Number(row.gamesPlayed),
+          wins: Number(row.wins),
+          draws: Number(row.draws),
+          losses: Number(row.losses),
+          lastPlayedAt: toIso(row.lastPlayedAt),
+        })),
+      },
+    };
+  } catch (error) {
+    const readError = describeReadError(error);
+    logReadError("getPlayerProfile", error);
+    return { data: null, source: "database", readError };
+  }
 }
