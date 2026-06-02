@@ -123,7 +123,12 @@ export function LeaderboardTable({
               </td>
               <td className="font-medium text-white">
                 {row.title ? `${row.title} ` : ""}
-                {row.username}
+                <Link
+                  className="hover:text-cyan-200"
+                  href={`/players/${encodeURIComponent(row.username)}`}
+                >
+                  {row.username}
+                </Link>
               </td>
               <td>{row.matches}</td>
               <td>{row.games}</td>
@@ -262,7 +267,14 @@ export function PlayersTable({ rows }: { rows: Player[] }) {
               key={row.id}
               className="border-b border-white/5 text-slate-200 last:border-0"
             >
-              <td className="py-4 font-medium text-white">{row.username}</td>
+              <td className="py-4 font-medium text-white">
+                <Link
+                  className="hover:text-cyan-200"
+                  href={`/players/${encodeURIComponent(row.username)}`}
+                >
+                  {row.username}
+                </Link>
+              </td>
               <td>{row.name ?? "—"}</td>
               <td>{row.title ?? "—"}</td>
               <td>{row.currentRating ?? "—"}</td>

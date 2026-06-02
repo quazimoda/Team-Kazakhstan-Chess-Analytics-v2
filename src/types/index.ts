@@ -99,6 +99,78 @@ export type LeaderboardRow = {
   lastPlayedAt: string | null;
 };
 
+
+export type PlayerProfileLeagueBreakdown = {
+  leagueName: string | null;
+  leagueSlug: string | null;
+  gamesPlayed: number;
+  matchesPlayed: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  winRate: number;
+  contributionScore: number;
+  lastPlayedAt: string | null;
+  dailyGames: number;
+  dailyTimeoutLosses: number;
+  timeoutRate: number;
+};
+
+export type PlayerProfileGame = {
+  id: string;
+  endedAt: string | null;
+  leagueName: string | null;
+  leagueSlug: string | null;
+  matchId: string | null;
+  matchTitle: string | null;
+  opponentUsername: string | null;
+  color: "white" | "black" | "unknown";
+  result: "win" | "draw" | "loss" | "unknown";
+  chesscomUrl: string | null;
+  dataSource: "old_sqlite" | "chesscom_api" | "unknown";
+  timeClass: string | null;
+  isDailyTimeoutLoss: boolean;
+};
+
+export type PlayerProfileMatch = {
+  id: string;
+  opponentTeam: string;
+  leagueName: string | null;
+  leagueSlug: string | null;
+  status: Match["status"];
+  teamResult: Match["result"];
+  playerScore: number;
+  gamesPlayed: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  lastPlayedAt: string | null;
+};
+
+export type PlayerProfile = {
+  player: Player;
+  summary: {
+    officialGames: number;
+    wins: number;
+    draws: number;
+    losses: number;
+    winRate: number;
+    contributionScore: number;
+    matchesPlayed: number;
+    bestLeague: string | null;
+  };
+  timeoutStats: {
+    dailyOfficialGames: number;
+    dailyTimeoutLosses: number;
+    dailyTimeoutWins: number;
+    dailyTimeoutRate: number;
+    lastDailyTimeoutDate: string | null;
+  };
+  leagueBreakdown: PlayerProfileLeagueBreakdown[];
+  recentGames: PlayerProfileGame[];
+  recentMatches: PlayerProfileMatch[];
+};
+
 export type SyncJob = {
   id: string;
   type: "matches" | "players" | "games" | "leaderboards";
