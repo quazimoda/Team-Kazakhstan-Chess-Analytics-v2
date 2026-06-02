@@ -36,6 +36,19 @@ export function mapProfileSummary(input: ProfileSummaryInput): ProfileSummary {
   };
 }
 
+export function invertGameResult(result: GameResult): GameResult {
+  if (result === "win") return "loss";
+  if (result === "loss") return "win";
+  return result;
+}
+
+export function resultFromViewedPlayerPerspective(input: {
+  storedTeamResult: GameResult;
+  viewedPlayerIsTeamPlayer: boolean;
+}) {
+  return input.viewedPlayerIsTeamPlayer ? input.storedTeamResult : invertGameResult(input.storedTeamResult);
+}
+
 export function isDailyTimeClass(timeClass: string | null | undefined) {
   const normalized = timeClass?.trim().toLowerCase();
   return normalized === "daily" || normalized === "correspondence" || normalized === "daily960";
@@ -44,6 +57,22 @@ export function isDailyTimeClass(timeClass: string | null | undefined) {
 export function isClearlyTimeoutResult(result: string | null | undefined) {
   const normalized = result?.trim().toLowerCase().replace(/[\s_-]+/g, "");
   return normalized === "timeout" || normalized === "timedout" || normalized === "timeforfeit";
+}
+
+export function isOfficialMatchScope(input: {
+  matchId: string | number | null | undefined;
+  matchIsOfficial: boolean;
+}) {
+  return input.matchId != null && input.matchIsOfficial;
+}
+
+export function shouldCountOfficialDailyTimeoutLoss(input: {
+  timeClass: string | null | undefined;
+  playerResult: string | null | undefined;
+  matchId: string | number | null | undefined;
+  matchIsOfficial: boolean;
+}) {
+  return isOfficialMatchScope(input) && isDailyTimeClass(input.timeClass) && isClearlyTimeoutResult(input.playerResult);
 }
 
 export function isDailyTimeoutLoss(input: {

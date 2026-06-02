@@ -5,6 +5,8 @@ import {
   isDailyTimeoutLoss,
   mapProfileSummary,
   normalizeProfileUsername,
+  resultFromViewedPlayerPerspective,
+  shouldCountOfficialDailyTimeoutLoss,
 } from "./player-profile";
 
 describe("player profile helpers", () => {
@@ -34,6 +36,18 @@ describe("player profile helpers", () => {
     assert.equal(summary.bestLeagueName, "Daily Chess League");
   });
 
+  it("keeps Team Kazakhstan player results unchanged", () => {
+    assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "win", viewedPlayerIsTeamPlayer: true }), "win");
+    assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "loss", viewedPlayerIsTeamPlayer: true }), "loss");
+  });
+
+  it("inverts the result when the viewed player is the opponent", () => {
+    assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "win", viewedPlayerIsTeamPlayer: false }), "loss");
+    assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "loss", viewedPlayerIsTeamPlayer: false }), "win");
+    assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "draw", viewedPlayerIsTeamPlayer: false }), "draw");
+    assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "unknown", viewedPlayerIsTeamPlayer: false }), "unknown");
+  });
+
   it("counts a daily timeout loss", () => {
     assert.equal(isDailyTimeoutLoss({ timeClass: "daily", playerResult: "timeout" }), true);
   });
@@ -53,5 +67,17 @@ describe("player profile helpers", () => {
   it("does not count missing or unknown time classes", () => {
     assert.equal(isDailyTimeoutLoss({ timeClass: null, playerResult: "timeout" }), false);
     assert.equal(isDailyTimeoutLoss({ timeClass: "unknown", playerResult: "timeout" }), false);
+  });
+
+  it("does not count unmatched daily timeout games without a match id", () => {
+    assert.equal(shouldCountOfficialDailyTimeoutLoss({ timeClass: "daily", playerResult: "timeout", matchId: null, matchIsOfficial: true }), false);
+  });
+
+  it("counts official daily timeout games", () => {
+    assert.equal(shouldCountOfficialDailyTimeoutLoss({ timeClass: "daily", playerResult: "timeout", matchId: 123, matchIsOfficial: true }), true);
+  });
+
+  it("does not count official live timeout-looking results", () => {
+    assert.equal(shouldCountOfficialDailyTimeoutLoss({ timeClass: "blitz", playerResult: "timeout", matchId: 123, matchIsOfficial: true }), false);
   });
 });

@@ -952,9 +952,8 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
             count(*) filter (where ${timeoutWinSql})::int as daily_timeout_wins,
             max(g.end_time) filter (where ${timeoutLossSql}) as last_daily_timeout_date
           from target
-          left join games g on (g.white_player_id = target.id or g.black_player_id = target.id)
-          left join matches m on g.match_id = m.id
-          where m.is_official = 1 or m.id is null
+          inner join games g on (g.white_player_id = target.id or g.black_player_id = target.id)
+          inner join matches m on g.match_id = m.id and m.is_official = 1
           group by target.id
         )
         select
@@ -1027,9 +1026,13 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
           case when g.white_player_id = target.id then bp.username when g.black_player_id = target.id then wp.username else null end as "opponentUsername",
           case when g.white_player_id = target.id then 'white' when g.black_player_id = target.id then 'black' else 'unknown' end as color,
           case
-            when g.white_player_id = target.id and g.raw_game #>> '{white,result}' = 'win' then 'win'
-            when g.black_player_id = target.id and g.raw_game #>> '{black,result}' = 'win' then 'win'
-            when lower(coalesce(case when g.white_player_id = target.id then g.raw_game #>> '{white,result}' when g.black_player_id = target.id then g.raw_game #>> '{black,result}' end, '')) in ('agreed', 'repetition', 'stalemate', 'insufficient', '50move', 'timevsinsufficient') then 'draw'
+            when exists (
+              select 1
+              from match_participations target_mp
+              where target_mp.match_id = m.id and target_mp.player_id = target.id
+            ) then g.result
+            when g.result = 'win' then 'loss'
+            when g.result = 'loss' then 'win'
             else g.result
           end as result,
           coalesce(g.raw_game->>'url', g.raw_game->>'game_url', g.raw_game->>'link', g.chesscom_game_uuid) as "chesscomUrl",
