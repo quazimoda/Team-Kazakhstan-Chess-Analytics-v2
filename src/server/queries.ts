@@ -13,7 +13,7 @@ import {
 } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { toIsoOrNull } from "@/lib/dates";
-import { chesscomMemberUrl, mapProfileSummary, normalizeProfileUsername } from "@/lib/player-profile";
+import { chesscomMemberUrl, mapProfileSummary, normalizeProfileUsername, resultFromViewedPlayerPerspective } from "@/lib/player-profile";
 import {
   demoLeaderboard,
   demoLeagues,
@@ -833,7 +833,8 @@ type PlayerProfileGameSqlRow = {
   matchTitle: string | null;
   opponentUsername: string | null;
   color: "white" | "black" | "unknown";
-  result: "win" | "draw" | "loss" | "unknown";
+  storedTeamResult: "win" | "draw" | "loss" | "unknown";
+  viewedPlayerIsTeamPlayer: boolean | number;
   chesscomUrl: string | null;
   dataSource: "old_sqlite" | "chesscom_api" | "unknown";
   timeClass: string | null;
@@ -1025,16 +1026,12 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
           m.name as "matchTitle",
           case when g.white_player_id = target.id then bp.username when g.black_player_id = target.id then wp.username else null end as "opponentUsername",
           case when g.white_player_id = target.id then 'white' when g.black_player_id = target.id then 'black' else 'unknown' end as color,
-          case
-            when exists (
-              select 1
-              from match_participations target_mp
-              where target_mp.match_id = m.id and target_mp.player_id = target.id
-            ) then g.result
-            when g.result = 'win' then 'loss'
-            when g.result = 'loss' then 'win'
-            else g.result
-          end as result,
+          g.result as "storedTeamResult",
+          exists (
+            select 1
+            from match_participations target_mp
+            where target_mp.match_id = m.id and target_mp.player_id = target.id
+          ) as "viewedPlayerIsTeamPlayer",
           coalesce(g.raw_game->>'url', g.raw_game->>'game_url', g.raw_game->>'link', g.chesscom_game_uuid) as "chesscomUrl",
           case when g.raw_game->>'source' = 'old_sqlite' then 'old_sqlite' when g.raw_game is not null then 'chesscom_api' else 'unknown' end as "dataSource",
           g.time_class as "timeClass",
@@ -1158,7 +1155,10 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
           matchTitle: row.matchTitle,
           opponentUsername: row.opponentUsername,
           color: row.color,
-          result: row.result,
+          result: resultFromViewedPlayerPerspective({
+            storedTeamResult: row.storedTeamResult,
+            viewedPlayerIsTeamPlayer: Boolean(row.viewedPlayerIsTeamPlayer),
+          }),
           chesscomUrl: row.chesscomUrl,
           dataSource: row.dataSource,
           timeClass: row.timeClass,

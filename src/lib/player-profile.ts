@@ -1,4 +1,5 @@
 export type GameResult = "win" | "draw" | "loss" | "unknown";
+export type DisplayGameResult = GameResult | "pending";
 
 export type ProfileSummaryInput = {
   gamesPlayed: number;
@@ -36,14 +37,14 @@ export function mapProfileSummary(input: ProfileSummaryInput): ProfileSummary {
   };
 }
 
-export function invertGameResult(result: GameResult): GameResult {
+export function invertGameResult(result: DisplayGameResult): DisplayGameResult {
   if (result === "win") return "loss";
   if (result === "loss") return "win";
   return result;
 }
 
 export function resultFromViewedPlayerPerspective(input: {
-  storedTeamResult: GameResult;
+  storedTeamResult: DisplayGameResult;
   viewedPlayerIsTeamPlayer: boolean;
 }) {
   return input.viewedPlayerIsTeamPlayer ? input.storedTeamResult : invertGameResult(input.storedTeamResult);

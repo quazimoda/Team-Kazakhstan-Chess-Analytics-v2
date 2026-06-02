@@ -125,7 +125,7 @@ export type PlayerProfileGame = {
   matchTitle: string | null;
   opponentUsername: string | null;
   color: "white" | "black" | "unknown";
-  result: "win" | "draw" | "loss" | "unknown";
+  result: "win" | "draw" | "loss" | "unknown" | "pending";
   chesscomUrl: string | null;
   dataSource: "old_sqlite" | "chesscom_api" | "unknown";
   timeClass: string | null;

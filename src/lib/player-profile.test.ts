@@ -36,16 +36,23 @@ describe("player profile helpers", () => {
     assert.equal(summary.bestLeagueName, "Daily Chess League");
   });
 
-  it("keeps Team Kazakhstan player results unchanged", () => {
+  it("keeps viewed Team Kazakhstan player results unchanged", () => {
     assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "win", viewedPlayerIsTeamPlayer: true }), "win");
     assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "loss", viewedPlayerIsTeamPlayer: true }), "loss");
   });
 
-  it("inverts the result when the viewed player is the opponent", () => {
+  it("inverts win and loss when the viewed player is the opponent", () => {
     assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "win", viewedPlayerIsTeamPlayer: false }), "loss");
     assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "loss", viewedPlayerIsTeamPlayer: false }), "win");
+  });
+
+  it("leaves draws unchanged when the viewed player is the opponent", () => {
     assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "draw", viewedPlayerIsTeamPlayer: false }), "draw");
+  });
+
+  it("leaves unknown and pending results unchanged when the viewed player is the opponent", () => {
     assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "unknown", viewedPlayerIsTeamPlayer: false }), "unknown");
+    assert.equal(resultFromViewedPlayerPerspective({ storedTeamResult: "pending", viewedPlayerIsTeamPlayer: false }), "pending");
   });
 
   it("counts a daily timeout loss", () => {
