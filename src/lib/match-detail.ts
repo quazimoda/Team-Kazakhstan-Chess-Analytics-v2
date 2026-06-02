@@ -1,7 +1,12 @@
-import { isClearlyTimeoutResult, isDailyTimeClass } from "./player-profile";
+import { isClearlyTimeoutResult } from "./player-profile";
 import type { Match, MatchDetailGame } from "../types";
 
 export type MatchResultStatus = Match["result"] | "unknown";
+
+export function isMatchDetailDailyTimeClass(timeClass: string | null | undefined) {
+  const normalized = timeClass?.trim().toLowerCase();
+  return normalized === "daily" || normalized === "correspondence";
+}
 
 export function formatMatchResult(input: {
   status?: Match["status"] | null;
@@ -30,7 +35,7 @@ export function isOfficialDailyTimeoutLoss(input: {
 }) {
   return Boolean(
     input.isOfficial &&
-      isDailyTimeClass(input.timeClass) &&
+      isMatchDetailDailyTimeClass(input.timeClass) &&
       isClearlyTimeoutResult(input.teamPlayerResultText),
   );
 }
@@ -42,7 +47,7 @@ export function isOfficialDailyTimeoutWin(input: {
 }) {
   return Boolean(
     input.isOfficial &&
-      isDailyTimeClass(input.timeClass) &&
+      isMatchDetailDailyTimeClass(input.timeClass) &&
       isClearlyTimeoutResult(input.opponentResultText),
   );
 }

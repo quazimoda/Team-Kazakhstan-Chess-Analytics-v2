@@ -628,13 +628,13 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
           count(*) filter (where chesscom_url is null or btrim(chesscom_url) = '')::int as "gamesWithoutChesscomUrlCount",
           count(*) filter (
             where ${isOfficial}
-              and lower(coalesce(time_class, '')) in ('daily', 'correspondence', 'daily960')
-              and regexp_replace(lower(coalesce(team_player_result_text, '')), '[\s_-]+', '', 'g') in ('timeout', 'timedout', 'timeforfeit')
+              and lower(btrim(coalesce(time_class, ''))) in ('daily', 'correspondence')
+              and replace(replace(replace(lower(coalesce(team_player_result_text, '')), ' ', ''), '_', ''), '-', '') in ('timeout', 'timedout', 'timeforfeit')
           )::int as "dailyTimeoutLosses",
           count(*) filter (
             where ${isOfficial}
-              and lower(coalesce(time_class, '')) in ('daily', 'correspondence', 'daily960')
-              and regexp_replace(lower(coalesce(opponent_result_text, '')), '[\s_-]+', '', 'g') in ('timeout', 'timedout', 'timeforfeit')
+              and lower(btrim(coalesce(time_class, ''))) in ('daily', 'correspondence')
+              and replace(replace(replace(lower(coalesce(opponent_result_text, '')), ' ', ''), '_', ''), '-', '') in ('timeout', 'timedout', 'timeforfeit')
           )::int as "dailyTimeoutWins",
           max(end_time) as "lastStoredGameDate"
         from match_games
@@ -660,8 +660,8 @@ export async function getMatchDetail(matchId: string | number): Promise<ApiRespo
           username,
           count(*) filter (
             where ${isOfficial}
-              and lower(coalesce(time_class, '')) in ('daily', 'correspondence', 'daily960')
-              and regexp_replace(lower(coalesce(team_player_result_text, '')), '[\s_-]+', '', 'g') in ('timeout', 'timedout', 'timeforfeit')
+              and lower(btrim(coalesce(time_class, ''))) in ('daily', 'correspondence')
+              and replace(replace(replace(lower(coalesce(team_player_result_text, '')), ' ', ''), '_', ''), '-', '') in ('timeout', 'timedout', 'timeforfeit')
           )::int as "dailyTimeoutLosses"
         from team_games
         where username is not null

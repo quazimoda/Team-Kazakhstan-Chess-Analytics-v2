@@ -20,6 +20,7 @@ describe("match detail helpers", () => {
   it("counts timeout losses and wins only for official Daily games", () => {
     assert.equal(isOfficialDailyTimeoutLoss({ isOfficial: true, timeClass: "daily", teamPlayerResultText: "timeout" }), true);
     assert.equal(isOfficialDailyTimeoutWin({ isOfficial: true, timeClass: "correspondence", opponentResultText: "timed out" }), true);
+    assert.equal(isOfficialDailyTimeoutLoss({ isOfficial: true, timeClass: "daily960", teamPlayerResultText: "timeout" }), false);
     assert.equal(isOfficialDailyTimeoutLoss({ isOfficial: false, timeClass: "daily", teamPlayerResultText: "timeout" }), false);
     assert.equal(isOfficialDailyTimeoutLoss({ isOfficial: true, timeClass: "rapid", teamPlayerResultText: "timeout" }), false);
     assert.equal(isOfficialDailyTimeoutLoss({ isOfficial: true, timeClass: null, teamPlayerResultText: "timeout" }), false);
