@@ -83,6 +83,69 @@ export type MatchGame = {
   endTime: string | null;
 };
 
+
+export type MatchDetailPlayer = {
+  playerId: string;
+  username: string;
+  title: string | null;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  score: number;
+  contributionScore: number | null;
+  dailyTimeoutLosses: number;
+  lastPlayedAt: string | null;
+};
+
+export type MatchDetailGame = {
+  id: string;
+  chesscomGameUuid: string;
+  boardNumber: number | null;
+  teamPlayerUsername: string | null;
+  opponentUsername: string | null;
+  color: "white" | "black" | "unknown";
+  result: "win" | "draw" | "loss" | "unknown";
+  timeClass: string | null;
+  endedAt: string | null;
+  dataSource: "old_sqlite" | "chesscom_api" | "unknown";
+  chesscomUrl: string | null;
+  isDailyTimeoutLoss: boolean;
+};
+
+export type MatchDetailCoverage = {
+  storedGamesCount: number;
+  oldSqliteGamesCount: number;
+  chesscomApiGamesCount: number;
+  unknownResultGamesCount: number;
+  unknownTimeClassGamesCount: number;
+  gamesWithoutChesscomUrlCount: number;
+  lastStoredGameDate: string | null;
+};
+
+export type MatchDetail = {
+  match: Match & {
+    isOfficial: boolean;
+    timeClass: string | null;
+    matchType: string | null;
+  };
+  summary: {
+    teamScore: number | null;
+    opponentScore: number | null;
+    result: Match["result"] | "unknown";
+    totalStoredGames: number;
+    teamPlayersCount: number;
+    opponentPlayersCount: number;
+    dailyTimeoutLosses: number;
+    dailyTimeoutWins: number;
+    oldSqliteGames: number;
+    chesscomApiGames: number;
+  };
+  players: MatchDetailPlayer[];
+  games: MatchDetailGame[];
+  coverage: MatchDetailCoverage;
+};
+
 export type LeaderboardRow = {
   rank: number;
   username: string;

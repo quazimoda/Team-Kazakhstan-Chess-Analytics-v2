@@ -13,7 +13,8 @@ import {
 } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
 import { toIsoOrNull } from "@/lib/dates";
-import { chesscomMemberUrl, mapProfileSummary, normalizeProfileUsername, resultFromViewedPlayerPerspective } from "@/lib/player-profile";
+import { formatMatchResult, isOfficialDailyTimeoutLoss, isOfficialDailyTimeoutWin } from "@/lib/match-detail";
+import { chesscomMemberUrl, isDailyTimeClass, mapProfileSummary, normalizeProfileUsername, resultFromViewedPlayerPerspective } from "@/lib/player-profile";
 import {
   demoLeaderboard,
   demoLeagues,
@@ -27,6 +28,7 @@ import type {
   LeaderboardRow,
   League,
   Match,
+  MatchDetail,
   MatchGame,
   MatchParticipation,
   Player,
@@ -419,6 +421,260 @@ export async function getMatchGames(
   } catch (error) {
     logReadFallback("getMatchGames", error);
     return { data: [], source: "demo" };
+  }
+}
+
+
+type MatchDetailGameSqlRow = {
+  id: number | string;
+  chesscomGameUuid: string;
+  matchId: number | string | null;
+  boardNumber: number | string | null;
+  whiteUsername: string | null;
+  blackUsername: string | null;
+  teamPlayerUsername: string | null;
+  opponentUsername: string | null;
+  color: "white" | "black" | "unknown";
+  result: "win" | "draw" | "loss" | "unknown";
+  timeClass: string | null;
+  endedAt: Date | string | null;
+  dataSource: "old_sqlite" | "chesscom_api" | "unknown";
+  chesscomUrl: string | null;
+  teamPlayerResultText: string | null;
+  opponentResultText: string | null;
+};
+
+type MatchDetailPlayerSqlRow = {
+  playerId: number | string;
+  username: string;
+  title: string | null;
+  games: number | string;
+  wins: number | string;
+  draws: number | string;
+  losses: number | string;
+  score: number | string;
+  contributionScore: number | string | null;
+  lastPlayedAt: Date | string | null;
+};
+
+function demoMatchDetail(matchId: number): MatchDetail | null {
+  const match = demoMatches.find((row) => Number(row.id) === matchId);
+  if (!match) return null;
+  const result = formatMatchResult({ status: match.status, result: match.result, teamScore: match.teamScore, opponentScore: match.opponentScore });
+  return {
+    match: {
+      ...match,
+      isOfficial: Boolean(match.isOfficialCandidate),
+      timeClass: null,
+      matchType: null,
+    },
+    summary: {
+      teamScore: match.teamScore,
+      opponentScore: match.opponentScore,
+      result,
+      totalStoredGames: 0,
+      teamPlayersCount: 0,
+      opponentPlayersCount: 0,
+      dailyTimeoutLosses: 0,
+      dailyTimeoutWins: 0,
+      oldSqliteGames: 0,
+      chesscomApiGames: 0,
+    },
+    players: [],
+    games: [],
+    coverage: {
+      storedGamesCount: 0,
+      oldSqliteGamesCount: 0,
+      chesscomApiGamesCount: 0,
+      unknownResultGamesCount: 0,
+      unknownTimeClassGamesCount: 0,
+      gamesWithoutChesscomUrlCount: 0,
+      lastStoredGameDate: null,
+    },
+  };
+}
+
+export async function getMatchDetail(matchId: string | number): Promise<ApiResponse<MatchDetail | null>> {
+  const id = typeof matchId === "number" ? matchId : Number(matchId);
+  if (!Number.isInteger(id) || id <= 0) return { data: null, source: db ? "database" : "demo" };
+  if (!db || isExplicitDemoMode()) return { data: demoMatchDetail(id), source: "demo" };
+
+  try {
+    const [matchRow] = await db
+      .select({ match: matches, league: leagues })
+      .from(matches)
+      .leftJoin(leagues, eq(matches.leagueId, leagues.id))
+      .where(eq(matches.id, id))
+      .limit(1);
+
+    if (!matchRow) return { data: null, source: "database" };
+
+    const isOfficial = Boolean(matchRow.match.isOfficial);
+    const [playerRows, gameRows] = await Promise.all([
+      db.execute<MatchDetailPlayerSqlRow>(sql`
+        select
+          p.id as "playerId",
+          p.username,
+          p.title,
+          mp.games_played as games,
+          mp.wins,
+          mp.draws,
+          mp.losses,
+          mp.score,
+          pc.contribution_score as "contributionScore",
+          mp.last_played_at as "lastPlayedAt"
+        from match_participations mp
+        inner join players p on p.id = mp.player_id
+        left join player_contributions pc on pc.player_id = p.id
+          and pc.period = 'all'
+          and pc.league_id is not distinct from ${matchRow.match.leagueId}
+        where mp.match_id = ${id}
+        order by pc.contribution_score desc nulls last, mp.score desc, mp.games_played desc, lower(p.username) asc
+      `),
+      db.execute<MatchDetailGameSqlRow>(sql`
+        with team_games as (
+          select
+            g.id,
+            g.chesscom_game_uuid as "chesscomGameUuid",
+            g.match_id as "matchId",
+            coalesce(mp_white.board_number, mp_black.board_number) as "boardNumber",
+            wp.username as "whiteUsername",
+            bp.username as "blackUsername",
+            case when mp_white.player_id is not null then wp.username when mp_black.player_id is not null then bp.username else null end as "teamPlayerUsername",
+            case when mp_white.player_id is not null then bp.username when mp_black.player_id is not null then wp.username else null end as "opponentUsername",
+            case when mp_white.player_id is not null then 'white' when mp_black.player_id is not null then 'black' else 'unknown' end as color,
+            g.result,
+            g.time_class as "timeClass",
+            g.end_time as "endedAt",
+            case when g.raw_game->>'source' = 'old_sqlite' then 'old_sqlite' when g.raw_game is not null then 'chesscom_api' else 'unknown' end as "dataSource",
+            coalesce(g.raw_game->>'url', g.raw_game->>'game_url', g.raw_game->>'link') as "chesscomUrl",
+            case
+              when mp_white.player_id is not null then coalesce(g.raw_game->'white'->>'result', g.raw_game->>'old_result')
+              when mp_black.player_id is not null then coalesce(g.raw_game->'black'->>'result', g.raw_game->>'old_result')
+              else null
+            end as "teamPlayerResultText",
+            case
+              when mp_white.player_id is not null then g.raw_game->'black'->>'result'
+              when mp_black.player_id is not null then g.raw_game->'white'->>'result'
+              else null
+            end as "opponentResultText"
+          from games g
+          left join players wp on wp.id = g.white_player_id
+          left join players bp on bp.id = g.black_player_id
+          left join match_participations mp_white on mp_white.match_id = g.match_id and mp_white.player_id = g.white_player_id
+          left join match_participations mp_black on mp_black.match_id = g.match_id and mp_black.player_id = g.black_player_id
+          where g.match_id = ${id}
+        )
+        select * from team_games
+        order by "endedAt" desc nulls last, id desc
+        limit 200
+      `),
+    ]);
+
+    const match: MatchDetail["match"] = {
+      id: String(matchRow.match.id),
+      chesscomMatchId: matchRow.match.chesscomMatchId,
+      leagueId: matchRow.match.leagueId ? String(matchRow.match.leagueId) : null,
+      name: matchRow.match.name,
+      opponent: matchRow.match.opponent,
+      status: matchRow.match.status,
+      result: matchRow.match.result,
+      teamScore: toNumber(matchRow.match.teamScore),
+      opponentScore: toNumber(matchRow.match.opponentScore),
+      boardCount: matchRow.match.boardCount,
+      startsAt: toIso(matchRow.match.startsAt),
+      endsAt: toIso(matchRow.match.endsAt),
+      leagueSlug: matchRow.league?.slug ?? classifyLeague(matchRow.match.name).leagueSlug,
+      leagueName: matchRow.league?.name ?? null,
+      isOfficialCandidate: isOfficial,
+      isOfficial,
+      chesscomUrl: matchRow.match.chesscomUrl,
+      opponentUrl: /^https?:\/\//i.test(matchRow.match.opponent ?? "") ? matchRow.match.opponent : null,
+      timeClass: typeof (matchRow.match.rawMatch as { time_class?: unknown } | null)?.time_class === "string" ? (matchRow.match.rawMatch as { time_class: string }).time_class : null,
+      matchType: typeof (matchRow.match.rawMatch as { match_type?: unknown; type?: unknown } | null)?.match_type === "string" ? (matchRow.match.rawMatch as { match_type: string }).match_type : typeof (matchRow.match.rawMatch as { type?: unknown } | null)?.type === "string" ? (matchRow.match.rawMatch as { type: string }).type : null,
+    };
+
+    const gamesDetail = gameRows.map((row) => ({
+      id: String(row.id),
+      chesscomGameUuid: row.chesscomGameUuid,
+      boardNumber: row.boardNumber == null ? null : Number(row.boardNumber),
+      teamPlayerUsername: row.teamPlayerUsername,
+      opponentUsername: row.opponentUsername,
+      color: row.color,
+      result: row.result,
+      timeClass: row.timeClass,
+      endedAt: toIso(row.endedAt),
+      dataSource: row.dataSource,
+      chesscomUrl: row.chesscomUrl,
+      isDailyTimeoutLoss: isOfficialDailyTimeoutLoss({ isOfficial, timeClass: row.timeClass, teamPlayerResultText: row.teamPlayerResultText }),
+    }));
+
+    const timeoutLossesByUsername = new Map<string, number>();
+    for (const row of gameRows) {
+      if (row.teamPlayerUsername && isOfficialDailyTimeoutLoss({ isOfficial, timeClass: row.timeClass, teamPlayerResultText: row.teamPlayerResultText })) {
+        timeoutLossesByUsername.set(row.teamPlayerUsername.toLowerCase(), (timeoutLossesByUsername.get(row.teamPlayerUsername.toLowerCase()) ?? 0) + 1);
+      }
+    }
+
+    const playersDetail = playerRows.map((row) => ({
+      playerId: String(row.playerId),
+      username: row.username,
+      title: row.title,
+      games: Number(row.games),
+      wins: Number(row.wins),
+      draws: Number(row.draws),
+      losses: Number(row.losses),
+      score: Number(row.score),
+      contributionScore: row.contributionScore == null ? null : Number(row.contributionScore),
+      dailyTimeoutLosses: timeoutLossesByUsername.get(row.username.toLowerCase()) ?? 0,
+      lastPlayedAt: toIso(row.lastPlayedAt),
+    })).sort((a, b) =>
+      (b.contributionScore ?? Number.NEGATIVE_INFINITY) - (a.contributionScore ?? Number.NEGATIVE_INFINITY) ||
+      b.score - a.score ||
+      b.games - a.games ||
+      a.username.localeCompare(b.username),
+    );
+
+    const oldSqliteGames = gamesDetail.filter((game) => game.dataSource === "old_sqlite").length;
+    const chesscomApiGames = gamesDetail.filter((game) => game.dataSource === "chesscom_api").length;
+    const dailyTimeoutLosses = gameRows.filter((row) => isOfficialDailyTimeoutLoss({ isOfficial, timeClass: row.timeClass, teamPlayerResultText: row.teamPlayerResultText })).length;
+    const dailyTimeoutWins = gameRows.filter((row) => isOfficialDailyTimeoutWin({ isOfficial, timeClass: row.timeClass, opponentResultText: row.opponentResultText })).length;
+    const opponentPlayers = new Set(gamesDetail.map((game) => game.opponentUsername?.toLowerCase()).filter((username): username is string => Boolean(username)));
+    const result = formatMatchResult({ status: match.status, result: match.result, teamScore: match.teamScore, opponentScore: match.opponentScore });
+
+    return {
+      source: "database",
+      data: {
+        match,
+        summary: {
+          teamScore: match.teamScore,
+          opponentScore: match.opponentScore,
+          result,
+          totalStoredGames: gamesDetail.length,
+          teamPlayersCount: playersDetail.length,
+          opponentPlayersCount: opponentPlayers.size,
+          dailyTimeoutLosses,
+          dailyTimeoutWins,
+          oldSqliteGames,
+          chesscomApiGames,
+        },
+        players: playersDetail,
+        games: gamesDetail,
+        coverage: {
+          storedGamesCount: gamesDetail.length,
+          oldSqliteGamesCount: oldSqliteGames,
+          chesscomApiGamesCount: chesscomApiGames,
+          unknownResultGamesCount: gamesDetail.filter((game) => game.result === "unknown").length,
+          unknownTimeClassGamesCount: gamesDetail.filter((game) => !isDailyTimeClass(game.timeClass) && !game.timeClass).length,
+          gamesWithoutChesscomUrlCount: gamesDetail.filter((game) => !game.chesscomUrl).length,
+          lastStoredGameDate: gamesDetail.map((game) => game.endedAt).filter((date): date is string => Boolean(date)).sort().at(-1) ?? null,
+        },
+      },
+    };
+  } catch (error) {
+    const readError = describeReadError(error);
+    logReadError("getMatchDetail", error);
+    return { data: null, source: "database", readError };
   }
 }
 
