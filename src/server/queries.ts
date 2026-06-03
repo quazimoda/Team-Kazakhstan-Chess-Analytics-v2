@@ -2,6 +2,7 @@ import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
 import { buildGetPlayersSql, type GetPlayersSqlRow } from "@/server/player-query";
+import { resolvePlayerOfficialMatchContributionLookup } from "@/server/player-official-match-contributions";
 import {
   games,
   leagues,
@@ -31,6 +32,7 @@ import type {
   MatchGame,
   MatchParticipation,
   Player,
+  PlayerOfficialMatchContribution,
   PlayerProfile,
   SyncJob,
   TeamSummary,
@@ -1122,6 +1124,28 @@ type PlayerProfileMatchSqlRow = {
   lastPlayedAt: Date | string | null;
 };
 
+type PlayerOfficialMatchContributionSqlRow = {
+  id: number | string;
+  name: string;
+  opponent: string;
+  leagueName: string | null;
+  leagueSlug: string | null;
+  status: Match["status"];
+  result: Match["result"] | null;
+  teamScore: number | string | null;
+  opponentScore: number | string | null;
+  startsAt: Date | string | null;
+  endsAt: Date | string | null;
+  chesscomUrl: string | null;
+  playerScore: number | string | null;
+  gamesPlayed: number | string;
+  wins: number | string;
+  draws: number | string;
+  losses: number | string;
+  dailyTimeoutLosses: number | string;
+  lastPlayedAt: Date | string | null;
+};
+
 function profileTimeoutLossSql(playerIdSql: SQL = sql`target.id`) {
   return sql`
     lower(coalesce(g.time_class, '')) in ('daily', 'correspondence', 'daily960')
@@ -1148,6 +1172,98 @@ function profileTimeoutWinSql(playerIdSql: SQL = sql`target.id`) {
       ''
     )) in ('timeout', 'timedout', 'timed out', 'time_forfeit', 'time-forfeit')
   `;
+}
+
+function mapPlayerOfficialMatchContribution(
+  row: PlayerOfficialMatchContributionSqlRow,
+): PlayerOfficialMatchContribution {
+  return {
+    id: String(row.id),
+    name: row.name,
+    opponent: row.opponent,
+    leagueName: row.leagueName,
+    leagueSlug: row.leagueSlug,
+    status: row.status,
+    result: row.result ?? "unknown",
+    teamScore: toNumber(row.teamScore),
+    opponentScore: toNumber(row.opponentScore),
+    startsAt: toIso(row.startsAt),
+    endsAt: toIso(row.endsAt),
+    chesscomUrl: row.chesscomUrl,
+    playerScore: toNumber(row.playerScore),
+    gamesPlayed: Number(row.gamesPlayed),
+    wins: Number(row.wins),
+    draws: Number(row.draws),
+    losses: Number(row.losses),
+    dailyTimeoutLosses: Number(row.dailyTimeoutLosses),
+    lastPlayedAt: toIso(row.lastPlayedAt),
+  };
+}
+
+export async function getPlayerOfficialMatchContributions(
+  usernameOrPlayerId: string | number,
+): Promise<ApiResponse<PlayerOfficialMatchContribution[]>> {
+  const lookup = resolvePlayerOfficialMatchContributionLookup(usernameOrPlayerId);
+
+  if (!lookup) {
+    return { data: [], source: db ? "database" : "demo" };
+  }
+
+  if (!db || isExplicitDemoMode()) return { data: [], source: "demo" };
+
+  try {
+    const rows = await db.execute<PlayerOfficialMatchContributionSqlRow>(sql`
+      with target as (
+        select id
+        from players
+        where ${lookup.type === "id" ? sql`id = ${lookup.playerId}` : sql`lower(username) = ${lookup.normalizedUsername}`}
+        limit 1
+      ), daily_timeout_by_match as (
+        select
+          g.match_id,
+          count(*) filter (where ${profileTimeoutLossSql()})::int as daily_timeout_losses
+        from target
+        inner join games g on (g.white_player_id = target.id or g.black_player_id = target.id)
+        inner join matches m on g.match_id = m.id and m.is_official = 1
+        group by g.match_id
+      )
+      select
+        m.id,
+        m.name,
+        m.opponent,
+        l.name as "leagueName",
+        l.slug as "leagueSlug",
+        m.status,
+        m.result,
+        m.team_score as "teamScore",
+        m.opponent_score as "opponentScore",
+        m.starts_at as "startsAt",
+        m.ends_at as "endsAt",
+        m.chesscom_url as "chesscomUrl",
+        case when mp.games_played > 0 then mp.score else null end as "playerScore",
+        mp.games_played as "gamesPlayed",
+        mp.wins,
+        mp.draws,
+        mp.losses,
+        coalesce(dtbm.daily_timeout_losses, 0)::int as "dailyTimeoutLosses",
+        mp.last_played_at as "lastPlayedAt"
+      from target
+      inner join match_participations mp on mp.player_id = target.id
+      inner join matches m on m.id = mp.match_id and m.is_official = 1
+      left join leagues l on m.league_id = l.id
+      left join daily_timeout_by_match dtbm on dtbm.match_id = m.id
+      order by coalesce(mp.last_played_at, m.ends_at, m.starts_at) desc nulls last, m.id desc
+    `);
+
+    return {
+      source: "database",
+      data: rows.map(mapPlayerOfficialMatchContribution),
+    };
+  } catch (error) {
+    const readError = describeReadError(error);
+    logReadError("getPlayerOfficialMatchContributions", error);
+    return { data: [], source: "database", readError };
+  }
 }
 
 export async function getPlayerProfile(username: string): Promise<ApiResponse<PlayerProfile | null>> {
@@ -1184,6 +1300,7 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
         leagueBreakdown: [],
         recentGames: [],
         recentMatches: [],
+        officialMatchContributions: [],
       },
     };
   }
@@ -1191,7 +1308,7 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
   try {
     const timeoutLossSql = profileTimeoutLossSql();
     const timeoutWinSql = profileTimeoutWinSql();
-    const [[profile], leagueRows, gameRows, matchRows] = await Promise.all([
+    const [[profile], leagueRows, gameRows, matchRows, contributionResult] = await Promise.all([
       db.execute<PlayerProfileSqlRow>(sql`
         with target as (
           select * from players where lower(username) = ${normalized} limit 1
@@ -1333,7 +1450,12 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
         order by mp.last_played_at desc nulls last, m.starts_at desc nulls last
         limit 10
       `),
+      getPlayerOfficialMatchContributions(normalized),
     ]);
+
+    if (contributionResult.readError) {
+      throw new Error(contributionResult.readError.message);
+    }
 
     if (!profile) return { data: null, source: "database" };
 
@@ -1444,6 +1566,7 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
           losses: Number(row.losses),
           lastPlayedAt: toIso(row.lastPlayedAt),
         })),
+        officialMatchContributions: contributionResult.data,
       },
     };
   } catch (error) {

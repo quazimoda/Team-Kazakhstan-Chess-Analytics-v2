@@ -18,6 +18,22 @@ function resultTone(result: "win" | "draw" | "loss" | "unknown" | "pending") {
   return "slate";
 }
 
+
+function formatScore(value: number | null | undefined) {
+  if (value == null) return "—";
+  return value.toFixed(1).replace(/\.0$/, "");
+}
+
+function formatTeamResult(
+  result: "win" | "draw" | "loss" | "unknown" | "pending",
+  teamScore: number | null,
+  opponentScore: number | null,
+) {
+  const label = result === "unknown" ? "unknown" : result;
+  if (teamScore == null || opponentScore == null) return label;
+  return `${label} (${formatScore(teamScore)}-${formatScore(opponentScore)})`;
+}
+
 function DataLabel({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
@@ -130,6 +146,57 @@ export default async function PlayerProfilePage({ params }: PlayerProfilePagePro
           <p className="mt-2 text-sm text-slate-400">Profile fields are still shown when available.</p>
         </Card>
       ) : null}
+
+      <Card className="mb-6 overflow-x-auto">
+        <h2 className="text-xl font-semibold text-white">Official match contributions</h2>
+        <p className="mt-2 text-sm text-slate-400">
+          All official Team Kazakhstan matches where this player has a stored participation row. Daily timeout losses are counted only from official Daily/correspondence games; Live games remain included as contributions but are not counted as timeouts.
+        </p>
+        {profile.officialMatchContributions.length === 0 ? (
+          <p className="mt-4 text-sm text-slate-400">No official match contributions are available for this player yet.</p>
+        ) : (
+          <table className="mt-4 w-full min-w-[1240px] text-left text-sm">
+            <thead className="text-slate-400">
+              <tr className="border-b border-white/10">
+                <th className="py-3">Date</th>
+                <th>League</th>
+                <th>Opponent</th>
+                <th>Match status</th>
+                <th>Team result</th>
+                <th>Player score</th>
+                <th>Games</th>
+                <th>W-D-L</th>
+                <th>Daily timeout losses</th>
+                <th>Links</th>
+              </tr>
+            </thead>
+            <tbody>
+              {profile.officialMatchContributions.map((match) => {
+                const matchUrl = publicChesscomUrl(match.chesscomUrl);
+                return (
+                  <tr key={match.id} className="border-b border-white/5 text-slate-200 last:border-0">
+                    <td className="py-4">{formatDateTime(match.lastPlayedAt ?? match.endsAt ?? match.startsAt)}</td>
+                    <td>{match.leagueName ?? match.leagueSlug ?? "—"}</td>
+                    <td className="font-medium text-white">{readableOpponentName(match.opponent, match.name)}</td>
+                    <td><Badge>{match.status}</Badge></td>
+                    <td><Badge tone={resultTone(match.result)}>{formatTeamResult(match.result, match.teamScore, match.opponentScore)}</Badge></td>
+                    <td>{formatScore(match.playerScore)}</td>
+                    <td>{match.gamesPlayed}</td>
+                    <td>{match.wins}-{match.draws}-{match.losses}</td>
+                    <td>{match.dailyTimeoutLosses}</td>
+                    <td>
+                      <div className="flex flex-wrap gap-3">
+                        <Link className="text-cyan-200 transition hover:text-cyan-100" href={`/matches/${match.id}`}>Details</Link>
+                        {matchUrl ? <Link className="text-cyan-200 transition hover:text-cyan-100" href={matchUrl}>Open match</Link> : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </Card>
 
       <Card className="mb-6 overflow-x-auto">
         <h2 className="text-xl font-semibold text-white">League breakdown</h2>

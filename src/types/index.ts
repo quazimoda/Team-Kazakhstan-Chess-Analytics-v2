@@ -195,6 +195,28 @@ export type PlayerProfileMatch = {
   lastPlayedAt: string | null;
 };
 
+export type PlayerOfficialMatchContribution = {
+  id: string;
+  name: string;
+  opponent: string;
+  leagueName: string | null;
+  leagueSlug: string | null;
+  status: Match["status"];
+  result: Match["result"] | "unknown";
+  teamScore: number | null;
+  opponentScore: number | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  chesscomUrl: string | null;
+  playerScore: number | null;
+  gamesPlayed: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  dailyTimeoutLosses: number;
+  lastPlayedAt: string | null;
+};
+
 export type PlayerProfile = {
   player: Player;
   summary: {
@@ -217,6 +239,7 @@ export type PlayerProfile = {
   leagueBreakdown: PlayerProfileLeagueBreakdown[];
   recentGames: PlayerProfileGame[];
   recentMatches: PlayerProfileMatch[];
+  officialMatchContributions: PlayerOfficialMatchContribution[];
 };
 
 export type SyncJob = {
