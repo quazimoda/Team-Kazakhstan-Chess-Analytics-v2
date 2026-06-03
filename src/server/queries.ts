@@ -2,6 +2,7 @@ import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/server/db";
 import { buildGetPlayersSql, type GetPlayersSqlRow } from "@/server/player-query";
+import { resolvePlayerOfficialMatchContributionLookup } from "@/server/player-official-match-contributions";
 import {
   games,
   leagues,
@@ -1202,18 +1203,9 @@ function mapPlayerOfficialMatchContribution(
 export async function getPlayerOfficialMatchContributions(
   usernameOrPlayerId: string | number,
 ): Promise<ApiResponse<PlayerOfficialMatchContribution[]>> {
-  const numericId =
-    typeof usernameOrPlayerId === "number"
-      ? usernameOrPlayerId
-      : /^\d+$/.test(usernameOrPlayerId.trim())
-        ? Number(usernameOrPlayerId)
-        : null;
-  const normalized =
-    numericId == null && typeof usernameOrPlayerId === "string"
-      ? normalizeProfileUsername(usernameOrPlayerId)
-      : null;
+  const lookup = resolvePlayerOfficialMatchContributionLookup(usernameOrPlayerId);
 
-  if (numericId == null && !normalized) {
+  if (!lookup) {
     return { data: [], source: db ? "database" : "demo" };
   }
 
@@ -1224,7 +1216,7 @@ export async function getPlayerOfficialMatchContributions(
       with target as (
         select id
         from players
-        where ${numericId == null ? sql`lower(username) = ${normalized}` : sql`id = ${numericId}`}
+        where ${lookup.type === "id" ? sql`id = ${lookup.playerId}` : sql`lower(username) = ${lookup.normalizedUsername}`}
         limit 1
       ), daily_timeout_by_match as (
         select
