@@ -29,6 +29,7 @@ import type {
   League,
   Match,
   MatchDetail,
+  DataCoverageSummary,
   MatchGame,
   MatchParticipation,
   Player,
@@ -1573,5 +1574,232 @@ export async function getPlayerProfile(username: string): Promise<ApiResponse<Pl
     const readError = describeReadError(error);
     logReadError("getPlayerProfile", error);
     return { data: null, source: "database", readError };
+  }
+}
+
+type DataCoverageGlobalSqlRow = {
+  totalOfficialMatches: number | string;
+  totalOfficialCompletedMatches: number | string;
+  totalActiveRegistrationOfficialMatches: number | string;
+  totalStoredGamesLinkedToOfficialMatches: number | string;
+  totalMatchParticipationsLinkedToOfficialMatches: number | string;
+  totalPlayersWithOfficialParticipations: number | string;
+  totalTeamMembers: number | string;
+  totalArchiveSyncStates: number | string;
+  failedArchiveSyncStates: number | string;
+  successfulArchiveSyncStates: number | string;
+};
+
+type DataCoverageMatchSqlRow = {
+  matchId: number | string;
+  name: string;
+  opponent: string;
+  leagueName: string | null;
+  leagueSlug: string | null;
+  status: Match["status"];
+  result: Match["result"];
+  teamScore: number | string | null;
+  opponentScore: number | string | null;
+  boardCount: number | string | null;
+  startsAt: Date | string | null;
+  endsAt: Date | string | null;
+  chesscomUrl: string | null;
+  storedGames: number | string;
+  participationRows: number | string;
+  teamKzPlayers: number | string;
+  oldSqliteGames: number | string;
+  chesscomApiGames: number | string;
+  unknownSourceGames: number | string;
+  latestGameAt: Date | string | null;
+};
+
+type DataCoverageArchiveSqlRow = {
+  totalRows: number | string;
+  successCount: number | string;
+  failedCount: number | string;
+  runningCount: number | string;
+  skippedCount: number | string;
+  latestStartedAt: Date | string | null;
+  latestFinishedAt: Date | string | null;
+};
+
+function coverageLabel(storedGames: number, boardCount: number | null): DataCoverageSummary["matches"][number]["estimatedCoverageLabel"] {
+  if (storedGames === 0) return "No games";
+  if (boardCount != null && storedGames >= boardCount * 2) return "Likely complete";
+  if (boardCount != null && storedGames > 0 && storedGames < boardCount * 2) return "Partial";
+  if (boardCount == null && storedGames > 0) return "Has games";
+  return "Unknown";
+}
+
+const emptyDataCoverageSummary: DataCoverageSummary = {
+  global: {
+    totalOfficialMatches: 0,
+    totalOfficialCompletedMatches: 0,
+    totalActiveRegistrationOfficialMatches: 0,
+    totalStoredGamesLinkedToOfficialMatches: 0,
+    totalMatchParticipationsLinkedToOfficialMatches: 0,
+    totalPlayersWithOfficialParticipations: 0,
+    totalTeamMembers: 0,
+    totalArchiveSyncStates: 0,
+    failedArchiveSyncStates: 0,
+    successfulArchiveSyncStates: 0,
+  },
+  matches: [],
+  archiveSync: {
+    totalRows: 0,
+    successCount: 0,
+    failedCount: 0,
+    runningCount: 0,
+    skippedCount: 0,
+    latestStartedAt: null,
+    latestFinishedAt: null,
+  },
+};
+
+export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverageSummary>> {
+  if (!db) {
+    return {
+      data: emptyDataCoverageSummary,
+      source: "database",
+      readError: { message: "DATABASE_URL is not configured; data coverage cannot be read." },
+    };
+  }
+
+  try {
+    const matchCoverageDataSourceSql = sql`
+      case
+        when g.raw_game->>'source' = 'old_sqlite'
+          or (jsonb_typeof(g.raw_game) = 'string' and g.raw_game #>> '{}' like '%old_sqlite%')
+          then 'old_sqlite'
+        when g.raw_game is not null then 'chesscom_api'
+        else 'unknown'
+      end
+    `;
+    const [globalRows, matchRows, archiveRows] = await Promise.all([
+      db.execute<DataCoverageGlobalSqlRow>(sql`
+        select
+          (select count(*)::int from matches m where m.is_official = 1) as "totalOfficialMatches",
+          (select count(*)::int from matches m where m.is_official = 1 and m.status = 'completed') as "totalOfficialCompletedMatches",
+          (select count(*)::int from matches m where m.is_official = 1 and m.status in ('active', 'registration')) as "totalActiveRegistrationOfficialMatches",
+          (select count(g.id)::int from games g inner join matches m on m.id = g.match_id where m.is_official = 1) as "totalStoredGamesLinkedToOfficialMatches",
+          (select count(*)::int from match_participations mp inner join matches m on m.id = mp.match_id where m.is_official = 1) as "totalMatchParticipationsLinkedToOfficialMatches",
+          (select count(distinct mp.player_id)::int from match_participations mp inner join matches m on m.id = mp.match_id where m.is_official = 1) as "totalPlayersWithOfficialParticipations",
+          (select count(*)::int from players p where p.is_team_member = 1) as "totalTeamMembers",
+          (select count(*)::int from player_archive_sync_state pass) as "totalArchiveSyncStates",
+          (select count(*)::int from player_archive_sync_state pass where pass.status = 'failed') as "failedArchiveSyncStates",
+          (select count(*)::int from player_archive_sync_state pass where pass.status = 'success') as "successfulArchiveSyncStates"
+      `),
+      db.execute<DataCoverageMatchSqlRow>(sql`
+        select
+          m.id as "matchId",
+          m.name as "name",
+          m.opponent as "opponent",
+          l.name as "leagueName",
+          l.slug as "leagueSlug",
+          m.status as "status",
+          m.result as "result",
+          m.team_score as "teamScore",
+          m.opponent_score as "opponentScore",
+          m.board_count as "boardCount",
+          m.starts_at as "startsAt",
+          m.ends_at as "endsAt",
+          m.chesscom_url as "chesscomUrl",
+          count(distinct g.id)::int as "storedGames",
+          count(distinct mp.player_id)::int as "participationRows",
+          count(distinct case when p.is_team_member = 1 then mp.player_id end)::int as "teamKzPlayers",
+          count(distinct g.id) filter (where ${matchCoverageDataSourceSql} = 'old_sqlite')::int as "oldSqliteGames",
+          count(distinct g.id) filter (where ${matchCoverageDataSourceSql} = 'chesscom_api')::int as "chesscomApiGames",
+          count(distinct g.id) filter (where ${matchCoverageDataSourceSql} = 'unknown')::int as "unknownSourceGames",
+          max(g.end_time) as "latestGameAt"
+        from matches m
+        left join leagues l on l.id = m.league_id
+        left join games g on g.match_id = m.id
+        left join match_participations mp on mp.match_id = m.id
+        left join players p on p.id = mp.player_id
+        where m.is_official = 1
+        group by m.id, m.name, m.opponent, l.name, l.slug, m.status, m.result, m.team_score, m.opponent_score, m.board_count, m.starts_at, m.ends_at, m.chesscom_url
+        order by
+          case
+            when count(distinct g.id) = 0 then 0
+            when m.board_count is not null and count(distinct g.id) < m.board_count * 2 then 1
+            else 2
+          end,
+          coalesce(m.ends_at, m.starts_at, m.updated_at, m.created_at) desc nulls last,
+          m.id desc
+        limit 100
+      `),
+      db.execute<DataCoverageArchiveSqlRow>(sql`
+        select
+          count(*)::int as "totalRows",
+          count(*) filter (where status = 'success')::int as "successCount",
+          count(*) filter (where status = 'failed')::int as "failedCount",
+          count(*) filter (where status = 'running')::int as "runningCount",
+          count(*) filter (where status = 'skipped')::int as "skippedCount",
+          max(started_at) as "latestStartedAt",
+          max(finished_at) as "latestFinishedAt"
+        from player_archive_sync_state
+      `),
+    ]);
+
+    const globalRow = globalRows[0] ?? emptyDataCoverageSummary.global;
+    const archiveRow = archiveRows[0] ?? emptyDataCoverageSummary.archiveSync;
+
+    return {
+      source: "database",
+      data: {
+        global: {
+          totalOfficialMatches: Number(globalRow.totalOfficialMatches),
+          totalOfficialCompletedMatches: Number(globalRow.totalOfficialCompletedMatches),
+          totalActiveRegistrationOfficialMatches: Number(globalRow.totalActiveRegistrationOfficialMatches),
+          totalStoredGamesLinkedToOfficialMatches: Number(globalRow.totalStoredGamesLinkedToOfficialMatches),
+          totalMatchParticipationsLinkedToOfficialMatches: Number(globalRow.totalMatchParticipationsLinkedToOfficialMatches),
+          totalPlayersWithOfficialParticipations: Number(globalRow.totalPlayersWithOfficialParticipations),
+          totalTeamMembers: Number(globalRow.totalTeamMembers),
+          totalArchiveSyncStates: Number(globalRow.totalArchiveSyncStates),
+          failedArchiveSyncStates: Number(globalRow.failedArchiveSyncStates),
+          successfulArchiveSyncStates: Number(globalRow.successfulArchiveSyncStates),
+        },
+        matches: matchRows.map((row) => {
+          const storedGames = Number(row.storedGames);
+          const boardCount = toNumber(row.boardCount);
+          return {
+            matchId: String(row.matchId),
+            name: row.name,
+            opponent: row.opponent,
+            leagueName: row.leagueName,
+            leagueSlug: row.leagueSlug,
+            status: row.status,
+            result: row.result,
+            teamScore: toNumber(row.teamScore),
+            opponentScore: toNumber(row.opponentScore),
+            boardCount,
+            startsAt: toIso(row.startsAt),
+            endsAt: toIso(row.endsAt),
+            chesscomUrl: row.chesscomUrl,
+            storedGames,
+            participationRows: Number(row.participationRows),
+            teamKzPlayers: Number(row.teamKzPlayers),
+            oldSqliteGames: Number(row.oldSqliteGames),
+            chesscomApiGames: Number(row.chesscomApiGames),
+            unknownSourceGames: Number(row.unknownSourceGames),
+            latestGameAt: toIso(row.latestGameAt),
+            estimatedCoverageLabel: coverageLabel(storedGames, boardCount),
+          };
+        }),
+        archiveSync: {
+          totalRows: Number(archiveRow.totalRows),
+          successCount: Number(archiveRow.successCount),
+          failedCount: Number(archiveRow.failedCount),
+          runningCount: Number(archiveRow.runningCount),
+          skippedCount: Number(archiveRow.skippedCount),
+          latestStartedAt: toIso(archiveRow.latestStartedAt),
+          latestFinishedAt: toIso(archiveRow.latestFinishedAt),
+        },
+      },
+    };
+  } catch (error) {
+    const readError = describeReadError(error);
+    logReadError("getDataCoverageSummary", error);
+    return { data: emptyDataCoverageSummary, source: "database", readError };
   }
 }

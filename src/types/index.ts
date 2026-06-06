@@ -242,6 +242,60 @@ export type PlayerProfile = {
   officialMatchContributions: PlayerOfficialMatchContribution[];
 };
 
+export type DataCoverageLabel =
+  | "No games"
+  | "Likely complete"
+  | "Partial"
+  | "Has games"
+  | "Unknown";
+
+export type DataCoverageSummary = {
+  global: {
+    totalOfficialMatches: number;
+    totalOfficialCompletedMatches: number;
+    totalActiveRegistrationOfficialMatches: number;
+    totalStoredGamesLinkedToOfficialMatches: number;
+    totalMatchParticipationsLinkedToOfficialMatches: number;
+    totalPlayersWithOfficialParticipations: number;
+    totalTeamMembers: number;
+    totalArchiveSyncStates: number;
+    failedArchiveSyncStates: number;
+    successfulArchiveSyncStates: number;
+  };
+  matches: Array<{
+    matchId: string;
+    name: string;
+    opponent: string;
+    leagueName: string | null;
+    leagueSlug: string | null;
+    status: Match["status"];
+    result: Match["result"];
+    teamScore: number | null;
+    opponentScore: number | null;
+    boardCount: number | null;
+    startsAt: string | null;
+    endsAt: string | null;
+    chesscomUrl: string | null;
+    storedGames: number;
+    participationRows: number;
+    teamKzPlayers: number;
+    oldSqliteGames: number;
+    chesscomApiGames: number;
+    unknownSourceGames: number;
+    latestGameAt: string | null;
+    estimatedCoverageLabel: DataCoverageLabel;
+  }>;
+  archiveSync: {
+    totalRows: number;
+    successCount: number;
+    failedCount: number;
+    runningCount: number;
+    skippedCount: number;
+    latestStartedAt: string | null;
+    latestFinishedAt: string | null;
+  };
+};
+
 export type SyncJob = {
   id: string;
   type: "matches" | "players" | "games" | "leaderboards";
