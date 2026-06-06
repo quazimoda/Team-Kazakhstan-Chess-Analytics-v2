@@ -8,8 +8,16 @@ function adminErrorMessage(error: unknown) {
 
 export async function GET(request: NextRequest) {
   try {
+    const configuredSecret = env.ADMIN_SECRET?.trim();
+    if (!configuredSecret) {
+      return NextResponse.json(
+        { error: "ADMIN_SECRET is not configured" },
+        { status: 503 },
+      );
+    }
+
     const secret = request.headers.get("x-admin-secret") ?? request.nextUrl.searchParams.get("secret");
-    if (env.ADMIN_SECRET && secret !== env.ADMIN_SECRET) return NextResponse.json({ error: "Invalid ADMIN_SECRET" }, { status: 401 });
+    if (secret !== configuredSecret) return NextResponse.json({ error: "Invalid ADMIN_SECRET" }, { status: 401 });
 
     const result = await getDataCoverageSummary();
     if (result.readError) {
