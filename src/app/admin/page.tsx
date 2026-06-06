@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Badge, Card, PageHeader } from "@/components/ui";
 import { SyncMatchesButton } from "./_components/sync-matches-button";
 import { formatDateTime } from "@/lib/utils";
@@ -16,7 +17,10 @@ export default async function AdminPage() {
         <Card className="lg:col-span-1">
           <p className="text-sm text-slate-400">Last sync status</p>
           <div className="mt-3 flex items-center gap-3"><Badge tone={latest?.status === "success" ? "green" : "gold"}>{latest?.status ?? "none"}</Badge><span className="text-sm text-slate-300">{formatDateTime(latest?.finishedAt ?? latest?.createdAt)}</span></div>
-          <div className="mt-6">
+          <div className="mt-6 space-y-3">
+            <Link className="inline-flex rounded-2xl border border-cyan-300/30 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/10" href="/admin/data-coverage">
+              Open data coverage dashboard
+            </Link>
             <SyncMatchesButton />
           </div>
           <p className="mt-5 rounded-2xl border border-yellow-300/20 bg-yellow-300/10 p-4 text-sm text-yellow-100">MVP warning: API admin writes are protected with ADMIN_SECRET. Add authenticated roles before production.</p>
