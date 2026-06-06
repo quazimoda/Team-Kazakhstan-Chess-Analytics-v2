@@ -249,6 +249,25 @@ export type DataCoverageLabel =
   | "Has games"
   | "Unknown";
 
+export type DataCoverageMatchKind = "live" | "daily" | "daily960" | "unknown";
+
+export type DataCoverageRecoveryHint =
+  | "Needs live match importer"
+  | "Try player archive backfill"
+  | "Try old SQLite import"
+  | "Needs match metadata refresh"
+  | "Rebuild participations"
+  | "Likely complete"
+  | "Unknown";
+
+export type DataCoverageMissingReason =
+  | "No stored games"
+  | "No participation rows"
+  | "Missing score"
+  | "Missing board count"
+  | "Partial games"
+  | "Complete enough";
+
 export type DataCoverageSummary = {
   global: {
     totalOfficialMatches: number;
@@ -261,6 +280,14 @@ export type DataCoverageSummary = {
     totalArchiveSyncStates: number;
     failedArchiveSyncStates: number;
     successfulArchiveSyncStates: number;
+  };
+  diagnostics: {
+    noGames: number;
+    partial: number;
+    likelyComplete: number;
+    liveMissingGames: number;
+    dailyMissingGames: number;
+    unknownKindMissingGames: number;
   };
   matches: Array<{
     matchId: string;
@@ -276,6 +303,14 @@ export type DataCoverageSummary = {
     startsAt: string | null;
     endsAt: string | null;
     chesscomUrl: string | null;
+    matchKind: DataCoverageMatchKind;
+    hasChesscomMatchId: boolean;
+    hasChesscomUrl: boolean;
+    hasRawMatch: boolean;
+    rawMatchHasScore: boolean;
+    rawMatchHasBoards: boolean;
+    recoveryHint: DataCoverageRecoveryHint;
+    missingReason: DataCoverageMissingReason;
     storedGames: number;
     participationRows: number;
     teamKzPlayers: number;

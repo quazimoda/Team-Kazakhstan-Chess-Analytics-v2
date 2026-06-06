@@ -13,6 +13,7 @@ import {
   syncJobs,
 } from "@/server/db/schema";
 import { classifyLeague } from "@/lib/analytics/classifyLeague";
+import { inferDataCoverageMatchKind, inferDataCoverageMissingReason, inferDataCoverageRecoveryHint } from "@/lib/admin/dataCoverageDiagnostics";
 import { toIsoOrNull } from "@/lib/dates";
 import { chesscomMemberUrl, mapProfileSummary, normalizeProfileUsername, resultFromViewedPlayerPerspective } from "@/lib/player-profile";
 import {
@@ -1604,6 +1605,11 @@ type DataCoverageMatchSqlRow = {
   startsAt: Date | string | null;
   endsAt: Date | string | null;
   chesscomUrl: string | null;
+  chesscomMatchId: number | string | null;
+  hasRawMatch: boolean;
+  rawMatchHasScore: boolean;
+  rawMatchHasBoards: boolean;
+  rawDiagnosticText: string | null;
   storedGames: number | string;
   participationRows: number | string;
   teamKzPlayers: number | string;
@@ -1611,6 +1617,15 @@ type DataCoverageMatchSqlRow = {
   chesscomApiGames: number | string;
   unknownSourceGames: number | string;
   latestGameAt: Date | string | null;
+};
+
+type DataCoverageDiagnosticsSqlRow = {
+  noGames: number | string;
+  partial: number | string;
+  likelyComplete: number | string;
+  liveMissingGames: number | string;
+  dailyMissingGames: number | string;
+  unknownKindMissingGames: number | string;
 };
 
 type DataCoverageArchiveSqlRow = {
@@ -1644,6 +1659,14 @@ const emptyDataCoverageSummary: DataCoverageSummary = {
     failedArchiveSyncStates: 0,
     successfulArchiveSyncStates: 0,
   },
+  diagnostics: {
+    noGames: 0,
+    partial: 0,
+    likelyComplete: 0,
+    liveMissingGames: 0,
+    dailyMissingGames: 0,
+    unknownKindMissingGames: 0,
+  },
   matches: [],
   archiveSync: {
     totalRows: 0,
@@ -1675,7 +1698,7 @@ export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverage
         else 'unknown'
       end
     `;
-    const [globalRows, matchRows, archiveRows] = await Promise.all([
+    const [globalRows, matchRows, diagnosticsRows, archiveRows] = await Promise.all([
       db.execute<DataCoverageGlobalSqlRow>(sql`
         select
           (select count(*)::int from matches m where m.is_official = 1) as "totalOfficialMatches",
@@ -1704,6 +1727,33 @@ export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverage
           m.starts_at as "startsAt",
           m.ends_at as "endsAt",
           m.chesscom_url as "chesscomUrl",
+          m.chesscom_match_id as "chesscomMatchId",
+          (m.raw_match is not null) as "hasRawMatch",
+          coalesce((
+            jsonb_typeof(m.raw_match) = 'object'
+            and (
+              m.raw_match ? 'team_score'
+              or m.raw_match ? 'opponent_score'
+              or m.raw_match ? 'teamScore'
+              or m.raw_match ? 'opponentScore'
+              or m.raw_match ? 'score'
+              or m.raw_match #> '{teams,0,score}' is not null
+              or m.raw_match #> '{teams,1,score}' is not null
+            )
+          ), false) as "rawMatchHasScore",
+          coalesce((
+            jsonb_typeof(m.raw_match) = 'object'
+            and (
+              jsonb_typeof(m.raw_match->'boards') = 'array'
+              or jsonb_typeof(m.raw_match->'games') = 'array'
+              or jsonb_typeof(m.raw_match->'players') = 'array'
+              or m.raw_match ? 'board_count'
+              or m.raw_match ? 'boardCount'
+              or m.raw_match ? 'registeredPlayers'
+              or m.raw_match ? 'registered_players'
+            )
+          ), false) as "rawMatchHasBoards",
+          left(coalesce(m.raw_match::text, ''), 4000) as "rawDiagnosticText",
           count(distinct g.id)::int as "storedGames",
           count(distinct mp.player_id)::int as "participationRows",
           count(distinct case when p.is_team_member = 1 then mp.player_id end)::int as "teamKzPlayers",
@@ -1717,7 +1767,7 @@ export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverage
         left join match_participations mp on mp.match_id = m.id
         left join players p on p.id = mp.player_id
         where m.is_official = 1
-        group by m.id, m.name, m.opponent, l.name, l.slug, m.status, m.result, m.team_score, m.opponent_score, m.board_count, m.starts_at, m.ends_at, m.chesscom_url
+        group by m.id, m.name, m.opponent, l.name, l.slug, m.status, m.result, m.team_score, m.opponent_score, m.board_count, m.starts_at, m.ends_at, m.chesscom_url, m.chesscom_match_id, m.raw_match
         order by
           case
             when count(distinct g.id) = 0 then 0
@@ -1726,7 +1776,38 @@ export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverage
           end,
           coalesce(m.ends_at, m.starts_at, m.updated_at, m.created_at) desc nulls last,
           m.id desc
-        limit 100
+        limit 200
+      `),
+      db.execute<DataCoverageDiagnosticsSqlRow>(sql`
+        with coverage as (
+          select
+            m.id,
+            m.board_count,
+            count(distinct g.id)::int as stored_games,
+            lower(concat_ws(' ', m.name, l.name, l.slug, m.chesscom_url, left(coalesce(m.raw_match::text, ''), 4000))) as diagnostic_text
+          from matches m
+          left join leagues l on l.id = m.league_id
+          left join games g on g.match_id = m.id
+          where m.is_official = 1
+          group by m.id, m.name, l.name, l.slug, m.chesscom_url, m.raw_match
+        ), classified as (
+          select
+            *,
+            case
+              when diagnostic_text ~ '(\mlive\M|live960|rapid|blitz|bullet|live chess|club-match/live|/live/)' then 'live'
+              when diagnostic_text ~ '(daily|correspondence|turn[- ]?based|team match|club match|world league|asian league|european league)' then 'daily'
+              else 'unknown'
+            end as match_kind
+          from coverage
+        )
+        select
+          count(*) filter (where stored_games = 0)::int as "noGames",
+          count(*) filter (where board_count is not null and stored_games > 0 and stored_games < board_count * 2)::int as "partial",
+          count(*) filter (where board_count is not null and stored_games >= board_count * 2)::int as "likelyComplete",
+          count(*) filter (where stored_games = 0 and match_kind = 'live')::int as "liveMissingGames",
+          count(*) filter (where stored_games = 0 and match_kind = 'daily')::int as "dailyMissingGames",
+          count(*) filter (where stored_games = 0 and match_kind = 'unknown')::int as "unknownKindMissingGames"
+        from classified
       `),
       db.execute<DataCoverageArchiveSqlRow>(sql`
         select
@@ -1742,6 +1823,7 @@ export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverage
     ]);
 
     const globalRow = globalRows[0] ?? emptyDataCoverageSummary.global;
+    const diagnosticsRow = diagnosticsRows[0] ?? emptyDataCoverageSummary.diagnostics;
     const archiveRow = archiveRows[0] ?? emptyDataCoverageSummary.archiveSync;
 
     return {
@@ -1759,9 +1841,38 @@ export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverage
           failedArchiveSyncStates: Number(globalRow.failedArchiveSyncStates),
           successfulArchiveSyncStates: Number(globalRow.successfulArchiveSyncStates),
         },
+        diagnostics: {
+          noGames: Number(diagnosticsRow.noGames),
+          partial: Number(diagnosticsRow.partial),
+          likelyComplete: Number(diagnosticsRow.likelyComplete),
+          liveMissingGames: Number(diagnosticsRow.liveMissingGames),
+          dailyMissingGames: Number(diagnosticsRow.dailyMissingGames),
+          unknownKindMissingGames: Number(diagnosticsRow.unknownKindMissingGames),
+        },
         matches: matchRows.map((row) => {
           const storedGames = Number(row.storedGames);
           const boardCount = toNumber(row.boardCount);
+          const participationRows = Number(row.participationRows);
+          const teamScore = toNumber(row.teamScore);
+          const opponentScore = toNumber(row.opponentScore);
+          const estimatedCoverageLabel = coverageLabel(storedGames, boardCount);
+          const matchKind = inferDataCoverageMatchKind({
+            name: row.name,
+            leagueName: row.leagueName,
+            leagueSlug: row.leagueSlug,
+            chesscomUrl: row.chesscomUrl,
+            rawDiagnosticText: row.rawDiagnosticText,
+          });
+          const diagnosticInput = {
+            storedGames,
+            participationRows,
+            boardCount,
+            teamScore,
+            opponentScore,
+            estimatedCoverageLabel,
+            matchKind,
+            hasRawMatch: row.hasRawMatch,
+          };
           return {
             matchId: String(row.matchId),
             name: row.name,
@@ -1770,20 +1881,28 @@ export async function getDataCoverageSummary(): Promise<ApiResponse<DataCoverage
             leagueSlug: row.leagueSlug,
             status: row.status,
             result: row.result,
-            teamScore: toNumber(row.teamScore),
-            opponentScore: toNumber(row.opponentScore),
+            teamScore,
+            opponentScore,
             boardCount,
             startsAt: toIso(row.startsAt),
             endsAt: toIso(row.endsAt),
             chesscomUrl: row.chesscomUrl,
+            matchKind,
+            hasChesscomMatchId: row.chesscomMatchId != null,
+            hasChesscomUrl: Boolean(row.chesscomUrl),
+            hasRawMatch: row.hasRawMatch,
+            rawMatchHasScore: row.rawMatchHasScore,
+            rawMatchHasBoards: row.rawMatchHasBoards,
+            recoveryHint: inferDataCoverageRecoveryHint(diagnosticInput),
+            missingReason: inferDataCoverageMissingReason(diagnosticInput),
             storedGames,
-            participationRows: Number(row.participationRows),
+            participationRows,
             teamKzPlayers: Number(row.teamKzPlayers),
             oldSqliteGames: Number(row.oldSqliteGames),
             chesscomApiGames: Number(row.chesscomApiGames),
             unknownSourceGames: Number(row.unknownSourceGames),
             latestGameAt: toIso(row.latestGameAt),
-            estimatedCoverageLabel: coverageLabel(storedGames, boardCount),
+            estimatedCoverageLabel,
           };
         }),
         archiveSync: {
